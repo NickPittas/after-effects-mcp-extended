@@ -1719,7 +1719,9 @@ function aeShapeFromValue(value) {
 }
 
 function aeCoercePropertyValue(property, value) {
-    if (property.matchName === "ADBE Mask Shape") return aeShapeFromValue(value);
+    if (property.matchName === "ADBE Mask Shape" || property.matchName === "ADBE Vector Shape") {
+        return aeShapeFromValue(value);
+    }
     return value;
 }
 
@@ -2177,6 +2179,200 @@ function aeMaskCommand(args) {
     throw new Error("Unsupported mask action: " + args.action);
 }
 
+function aeShapeLayer(comp, args, allowCreate) {
+    if (args.layerIndex !== undefined || args.layerName) return aeGetLayer(comp, args);
+    if (!allowCreate || !args.createLayer) throw new Error("Pass layerIndex or layerName, or set createLayer for shape add.");
+    var layer = comp.layers.addShape();
+    var layerSettings = typeof args.createLayer === "object" ? args.createLayer : {};
+    layer.name = layerSettings.name || args.newLayerName || "Shape Layer";
+    if (layerSettings.position || args.layerPosition) {
+        layer.property("ADBE Transform Group").property("ADBE Position").setValue(layerSettings.position || args.layerPosition);
+    }
+    if (layerSettings.inPoint !== undefined) layer.inPoint = layerSettings.inPoint;
+    if (layerSettings.outPoint !== undefined) layer.outPoint = layerSettings.outPoint;
+    return layer;
+}
+
+function aeShapeRoot(layer) {
+    var root = layer.property("ADBE Root Vectors Group");
+    if (!root) throw new Error("Layer is not a shape layer.");
+    return root;
+}
+
+function aeShapeContents(property) {
+    if (property.matchName === "ADBE Vector Group") {
+        return property.property("ADBE Vectors Group");
+    }
+    if (property.matchName === "ADBE Root Vectors Group" || property.matchName === "ADBE Vectors Group") {
+        return property;
+    }
+    throw new Error("Shape container path must resolve to Contents or a vector group.");
+}
+
+function aeResolveShapeItem(root, path, label) {
+    if (!path || path.length === 0) throw new Error(label + " is required.");
+    return aeResolveProperty(root, path);
+}
+
+function aeShapeMatchName(type) {
+    var normalized = String(type || "").toLowerCase();
+    var matchNames = {
+        group: "ADBE Vector Group",
+        rectangle: "ADBE Vector Shape - Rect",
+        rect: "ADBE Vector Shape - Rect",
+        ellipse: "ADBE Vector Shape - Ellipse",
+        path: "ADBE Vector Shape - Group",
+        polystar: "ADBE Vector Shape - Star",
+        polygon: "ADBE Vector Shape - Star",
+        star: "ADBE Vector Shape - Star",
+        fill: "ADBE Vector Graphic - Fill",
+        stroke: "ADBE Vector Graphic - Stroke",
+        trimpaths: "ADBE Vector Filter - Trim",
+        repeater: "ADBE Vector Filter - Repeater",
+        roundcorners: "ADBE Vector Filter - RC",
+        puckerbloat: "ADBE Vector Filter - PB",
+        wigglepaths: "ADBE Vector Filter - Roughen",
+        wiggletransform: "ADBE Vector Filter - Wiggler",
+        twist: "ADBE Vector Filter - Twist",
+        mergepaths: "ADBE Vector Filter - Merge",
+        offsetpaths: "ADBE Vector Filter - Offset",
+        zigzag: "ADBE Vector Filter - Zigzag"
+    };
+    var matchName = matchNames[normalized];
+    if (!matchName) throw new Error("Unsupported shape item type: " + type);
+    return matchName;
+}
+
+function aeSetShapeProperty(item, matchName, friendlyName, value) {
+    if (value === undefined) return false;
+    var property = item.property(matchName) || item.property(friendlyName);
+    if (!property || !property.setValue) return false;
+    property.setValue(aeCoercePropertyValue(property, value));
+    return true;
+}
+
+function aeConfigureShapeItem(item, spec) {
+    var changed = [];
+    if (spec.name !== undefined) {
+        item.name = spec.name;
+        changed.push("name");
+    }
+    if (spec.enabled !== undefined) {
+        item.enabled = spec.enabled;
+        changed.push("enabled");
+    }
+
+    if (item.matchName === "ADBE Vector Group" && spec.transform) {
+        var transform = item.property("ADBE Vector Transform Group");
+        var transformChanges = aeSetEffectSettings(transform, spec.transform);
+        for (var t = 0; t < transformChanges.length; t++) changed.push("transform/" + transformChanges[t]);
+    }
+    if (item.matchName === "ADBE Vector Shape - Rect") {
+        if (aeSetShapeProperty(item, "ADBE Vector Rect Size", "Size", spec.size)) changed.push("size");
+        if (aeSetShapeProperty(item, "ADBE Vector Rect Position", "Position", spec.position)) changed.push("position");
+        if (aeSetShapeProperty(item, "ADBE Vector Rect Roundness", "Roundness", spec.roundness)) changed.push("roundness");
+    } else if (item.matchName === "ADBE Vector Shape - Ellipse") {
+        if (aeSetShapeProperty(item, "ADBE Vector Ellipse Size", "Size", spec.size)) changed.push("size");
+        if (aeSetShapeProperty(item, "ADBE Vector Ellipse Position", "Position", spec.position)) changed.push("position");
+    } else if (item.matchName === "ADBE Vector Shape - Star") {
+        var requestedType = String(spec.type || "").toLowerCase();
+        if (requestedType === "polygon" && aeSetShapeProperty(item, "ADBE Vector Star Type", "Type", 1)) changed.push("type");
+        if (requestedType === "star" && aeSetShapeProperty(item, "ADBE Vector Star Type", "Type", 2)) changed.push("type");
+        if (aeSetShapeProperty(item, "ADBE Vector Star Points", "Points", spec.points)) changed.push("points");
+        if (aeSetShapeProperty(item, "ADBE Vector Star Position", "Position", spec.position)) changed.push("position");
+        if (aeSetShapeProperty(item, "ADBE Vector Star Rotation", "Rotation", spec.rotation)) changed.push("rotation");
+        if (aeSetShapeProperty(item, "ADBE Vector Star Inner Radius", "Inner Radius", spec.innerRadius)) changed.push("innerRadius");
+        if (aeSetShapeProperty(item, "ADBE Vector Star Outer Radius", "Outer Radius", spec.outerRadius)) changed.push("outerRadius");
+        if (aeSetShapeProperty(item, "ADBE Vector Star Inner Roundess", "Inner Roundness", spec.innerRoundness)) changed.push("innerRoundness");
+        if (aeSetShapeProperty(item, "ADBE Vector Star Outer Roundess", "Outer Roundness", spec.outerRoundness)) changed.push("outerRoundness");
+    } else if (item.matchName === "ADBE Vector Shape - Group") {
+        if (aeSetShapeProperty(item, "ADBE Vector Shape", "Path", spec.shape)) changed.push("shape");
+    } else if (item.matchName === "ADBE Vector Graphic - Fill") {
+        if (aeSetShapeProperty(item, "ADBE Vector Fill Color", "Color", spec.color)) changed.push("color");
+        if (aeSetShapeProperty(item, "ADBE Vector Fill Opacity", "Opacity", spec.opacity)) changed.push("opacity");
+        if (aeSetShapeProperty(item, "ADBE Vector Fill Rule", "Fill Rule", spec.fillRule)) changed.push("fillRule");
+    } else if (item.matchName === "ADBE Vector Graphic - Stroke") {
+        if (aeSetShapeProperty(item, "ADBE Vector Stroke Color", "Color", spec.color)) changed.push("color");
+        if (aeSetShapeProperty(item, "ADBE Vector Stroke Opacity", "Opacity", spec.opacity)) changed.push("opacity");
+        if (aeSetShapeProperty(item, "ADBE Vector Stroke Width", "Stroke Width", spec.width)) changed.push("width");
+        if (aeSetShapeProperty(item, "ADBE Vector Stroke Line Cap", "Line Cap", spec.lineCap)) changed.push("lineCap");
+        if (aeSetShapeProperty(item, "ADBE Vector Stroke Line Join", "Line Join", spec.lineJoin)) changed.push("lineJoin");
+        if (aeSetShapeProperty(item, "ADBE Vector Stroke Miter Limit", "Miter Limit", spec.miterLimit)) changed.push("miterLimit");
+    }
+
+    var settingChanges = aeSetEffectSettings(item, spec.settings);
+    for (var s = 0; s < settingChanges.length; s++) changed.push("settings/" + settingChanges[s]);
+    return changed;
+}
+
+function aeAddShapeItem(container, spec) {
+    var item = container.addProperty(aeShapeMatchName(spec.type));
+    var changed = aeConfigureShapeItem(item, spec);
+    var childResults = [];
+    if (item.matchName === "ADBE Vector Group" && spec.items) {
+        var childContainer = aeShapeContents(item);
+        for (var i = 0; i < spec.items.length; i++) {
+            var childResult = aeAddShapeItem(childContainer, spec.items[i]);
+            childResults.push({
+                item: aeSerializeProperty(childResult.item, 0, 3, true),
+                changedProperties: childResult.changedProperties,
+                children: childResult.children
+            });
+        }
+    }
+    return { item: item, changedProperties: changed, children: childResults };
+}
+
+function aeShapeCommand(args) {
+    var comp = aeGetComposition(args);
+    var layer = aeShapeLayer(comp, args, args.action === "add");
+    var root = aeShapeRoot(layer);
+    if (args.action === "get") {
+        var inspected = args.itemPath ? aeResolveProperty(root, args.itemPath) : root;
+        return {
+            layer: { index: layer.index, name: layer.name },
+            item: aeSerializeProperty(inspected, 0, args.depth === undefined ? 5 : args.depth, args.includeValues)
+        };
+    }
+    if (args.action === "add") {
+        var containerTarget = args.containerPath ? aeResolveProperty(root, args.containerPath) : root;
+        var container = aeShapeContents(containerTarget);
+        var specifications = args.items && !args.type && !args.item ? args.items : [args.item || args];
+        var additions = [];
+        for (var i = 0; i < specifications.length; i++) {
+            var addition = aeAddShapeItem(container, specifications[i]);
+            additions.push({
+                item: aeSerializeProperty(addition.item, 0, args.depth === undefined ? 4 : args.depth, true),
+                changedProperties: addition.changedProperties,
+                children: addition.children
+            });
+        }
+        return { layer: { index: layer.index, name: layer.name }, additions: additions };
+    }
+
+    var item = aeResolveShapeItem(root, args.itemPath, "itemPath");
+    if (args.action === "update" || args.action === "set") {
+        var changed = aeConfigureShapeItem(item, args);
+        return { item: aeSerializeProperty(item, 0, args.depth === undefined ? 4 : args.depth, true), changedProperties: changed };
+    }
+    if (args.action === "remove") {
+        var removedName = item.name;
+        var removedIndex = item.propertyIndex;
+        item.remove();
+        return { removed: removedName, removedIndex: removedIndex };
+    }
+    if (args.action === "move") {
+        item.moveTo(args.toIndex);
+        return { item: aeSerializeProperty(item, 0, 2, true) };
+    }
+    if (args.action === "duplicate") {
+        var duplicate = item.duplicate();
+        if (args.newName) duplicate.name = args.newName;
+        return { item: aeSerializeProperty(duplicate, 0, args.depth === undefined ? 4 : args.depth, true) };
+    }
+    throw new Error("Unsupported shape action: " + args.action);
+}
+
 function aeLayerCommand(args) {
     var comp = aeGetComposition(args);
     if (args.action === "add") {
@@ -2334,6 +2530,7 @@ function aeCommand(args) {
         else if (args.operation === "keyframe") data = aeKeyframeCommand(args);
         else if (args.operation === "effect") data = aeEffectCommand(args);
         else if (args.operation === "mask") data = aeMaskCommand(args);
+        else if (args.operation === "shape") data = aeShapeCommand(args);
         else if (args.operation === "layer") data = aeLayerCommand(args);
         else if (args.operation === "composition") data = aeCompositionCommand(args);
         else if (args.operation === "project") data = aeProjectCommand(args);
