@@ -968,7 +968,7 @@ To apply the "cinematic-look" template:
 
 server.tool(
   "after-effects",
-  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, masks, shape contents, layers, compositions, projects, or frame capture.",
+  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, projects, or frame capture.",
   {
     operation: z.enum([
       "inspect",
@@ -977,6 +977,7 @@ server.tool(
       "effect",
       "mask",
       "shape",
+      "text",
       "layer",
       "composition",
       "project",

@@ -1674,6 +1674,123 @@ function aeResolveProperty(root, propertyPath) {
     return current;
 }
 
+function aeTextJustificationName(value) {
+    if (value === ParagraphJustification.RIGHT_JUSTIFY) return "right";
+    if (value === ParagraphJustification.CENTER_JUSTIFY) return "center";
+    if (value === ParagraphJustification.FULL_JUSTIFY_LASTLINE_LEFT) return "fullJustifyLastLineLeft";
+    if (value === ParagraphJustification.FULL_JUSTIFY_LASTLINE_RIGHT) return "fullJustifyLastLineRight";
+    if (value === ParagraphJustification.FULL_JUSTIFY_LASTLINE_CENTER) return "fullJustifyLastLineCenter";
+    if (value === ParagraphJustification.FULL_JUSTIFY_LASTLINE_FULL) return "fullJustifyLastLineFull";
+    return "left";
+}
+
+function aeTextJustificationValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = value.toLowerCase();
+    var values = {
+        left: ParagraphJustification.LEFT_JUSTIFY,
+        right: ParagraphJustification.RIGHT_JUSTIFY,
+        center: ParagraphJustification.CENTER_JUSTIFY,
+        fulljustifylastlineleft: ParagraphJustification.FULL_JUSTIFY_LASTLINE_LEFT,
+        fulljustifylastlineright: ParagraphJustification.FULL_JUSTIFY_LASTLINE_RIGHT,
+        fulljustifylastlinecenter: ParagraphJustification.FULL_JUSTIFY_LASTLINE_CENTER,
+        fulljustifylastlinefull: ParagraphJustification.FULL_JUSTIFY_LASTLINE_FULL,
+        fulljustificationlastlineleft: ParagraphJustification.FULL_JUSTIFY_LASTLINE_LEFT,
+        fulljustificationlastlineright: ParagraphJustification.FULL_JUSTIFY_LASTLINE_RIGHT,
+        fulljustificationlastlinecenter: ParagraphJustification.FULL_JUSTIFY_LASTLINE_CENTER,
+        fulljustificationlastlinefull: ParagraphJustification.FULL_JUSTIFY_LASTLINE_FULL,
+        fulljustifyleft: ParagraphJustification.FULL_JUSTIFY_LASTLINE_LEFT,
+        fulljustifyright: ParagraphJustification.FULL_JUSTIFY_LASTLINE_RIGHT,
+        fulljustifycenter: ParagraphJustification.FULL_JUSTIFY_LASTLINE_CENTER,
+        fulljustify: ParagraphJustification.FULL_JUSTIFY_LASTLINE_FULL
+    };
+    if (values[normalized] === undefined) throw new Error("Unsupported text justification: " + value);
+    return values[normalized];
+}
+
+function aeSerializeTextDocument(document) {
+    var result = {};
+    var properties = [
+        "text", "font", "fontFamily", "fontStyle", "fontSize",
+        "applyFill", "fillColor", "applyStroke", "strokeColor", "strokeWidth", "strokeOverFill",
+        "tracking", "kerning", "leading", "autoLeading", "baselineShift",
+        "horizontalScale", "verticalScale", "tsume", "fauxBold", "fauxItalic",
+        "allCaps", "smallCaps", "superscript", "subscript", "ligature", "noBreak",
+        "autoHyphenate", "everyLineComposer", "composerEngine", "direction",
+        "digitSet", "baselineDirection", "leadingType", "lineJoinType",
+        "firstLineIndent", "startIndent", "endIndent", "spaceBefore", "spaceAfter",
+        "hangingRoman", "boxText", "pointText", "boxTextPos", "boxTextSize",
+        "boxVerticalAlignment", "boxAutoFitPolicy", "paragraphCount", "composedLineCount"
+    ];
+    for (var i = 0; i < properties.length; i++) {
+        var propertyName = properties[i];
+        try {
+            var value = document[propertyName];
+            if (value !== undefined) result[propertyName] = value;
+        } catch (_textReadError) {}
+    }
+    try { result.justification = aeTextJustificationName(document.justification); } catch (_justificationReadError) {}
+    return result;
+}
+
+function aeApplyTextSettings(target, settings) {
+    var report = { changed: [], skipped: [] };
+    if (!settings) return report;
+    for (var propertyName in settings) {
+        if (!settings.hasOwnProperty(propertyName)) continue;
+        if (propertyName === "characterRanges" || propertyName === "paragraphRanges" || propertyName === "document" || propertyName === "settings") continue;
+        try {
+            var value = settings[propertyName];
+            if (propertyName === "justification") value = aeTextJustificationValue(value);
+            target[propertyName] = value;
+            report.changed.push(propertyName);
+        } catch (textSettingError) {
+            report.skipped.push({ property: propertyName, message: textSettingError.toString() });
+        }
+    }
+    return report;
+}
+
+function aeApplyTextRanges(document, ranges, methodName) {
+    var reports = [];
+    if (!ranges) return reports;
+    if (typeof document[methodName] !== "function") {
+        return [{ changed: [], skipped: [{ property: methodName, message: methodName + " is not supported by this After Effects version." }] }];
+    }
+    for (var i = 0; i < ranges.length; i++) {
+        var rangeSpec = ranges[i];
+        var isParagraphRange = methodName === "paragraphRange";
+        var explicitStart = isParagraphRange ? rangeSpec.startParagraph : rangeSpec.startCharacter;
+        var explicitEnd = isParagraphRange ? rangeSpec.endParagraph : rangeSpec.endCharacter;
+        var start = explicitStart !== undefined ? explicitStart : (rangeSpec.start || 0);
+        var defaultEnd = isParagraphRange ? document.paragraphCount : document.text.length;
+        var end = explicitEnd !== undefined ? explicitEnd : (rangeSpec.end !== undefined ? rangeSpec.end : defaultEnd);
+        try {
+            var range = document[methodName](start, end);
+            var report = aeApplyTextSettings(range, rangeSpec.settings || rangeSpec);
+            reports.push({ start: start, end: end, changed: report.changed, skipped: report.skipped });
+        } catch (rangeError) {
+            reports.push({ start: start, end: end, changed: [], skipped: [{ property: methodName, message: rangeError.toString() }] });
+        }
+    }
+    return reports;
+}
+
+function aeTextDocumentFromValue(property, value) {
+    if (value instanceof TextDocument) return value;
+    var document = property.value;
+    if (typeof value === "string") {
+        document.text = value;
+        return document;
+    }
+    if (!value || typeof value !== "object") throw new Error("Source Text values require a string or text settings object.");
+    var settings = value.document || value.settings || value;
+    aeApplyTextSettings(document, settings);
+    aeApplyTextRanges(document, value.characterRanges, "characterRange");
+    aeApplyTextRanges(document, value.paragraphRanges, "paragraphRange");
+    return document;
+}
+
 function aeSafeValue(value) {
     if (value === null || value === undefined) return value;
     if (value instanceof Shape) {
@@ -1685,17 +1802,7 @@ function aeSafeValue(value) {
         };
     }
     if (value instanceof TextDocument) {
-        return {
-            text: value.text,
-            font: value.font,
-            fontSize: value.fontSize,
-            fillColor: value.fillColor,
-            strokeColor: value.strokeColor,
-            strokeWidth: value.strokeWidth,
-            applyFill: value.applyFill,
-            applyStroke: value.applyStroke,
-            justification: value.justification
-        };
+        return aeSerializeTextDocument(value);
     }
     try {
         JSON.stringify(value);
@@ -1722,6 +1829,7 @@ function aeCoercePropertyValue(property, value) {
     if (property.matchName === "ADBE Mask Shape" || property.matchName === "ADBE Vector Shape") {
         return aeShapeFromValue(value);
     }
+    if (property.matchName === "ADBE Text Document") return aeTextDocumentFromValue(property, value);
     return value;
 }
 
@@ -2373,6 +2481,94 @@ function aeShapeCommand(args) {
     throw new Error("Unsupported shape action: " + args.action);
 }
 
+function aeTextSourceProperty(layer) {
+    var textProperties = layer.property("ADBE Text Properties");
+    var sourceText = textProperties ? textProperties.property("ADBE Text Document") : null;
+    if (!sourceText) throw new Error("Layer is not a text layer.");
+    return sourceText;
+}
+
+function aeTextSettingsFromArgs(args) {
+    var source = args.document || args.settings || {};
+    var settings = {};
+    for (var sourceName in source) {
+        if (source.hasOwnProperty(sourceName)) settings[sourceName] = source[sourceName];
+    }
+    var directProperties = [
+        "text", "font", "fontSize", "applyFill", "fillColor", "applyStroke",
+        "strokeColor", "strokeWidth", "strokeOverFill", "tracking", "kerning",
+        "leading", "autoLeading", "baselineShift", "horizontalScale", "verticalScale",
+        "tsume", "fauxBold", "fauxItalic", "allCaps", "smallCaps", "superscript",
+        "subscript", "ligature", "noBreak", "autoHyphenate", "everyLineComposer",
+        "composerEngine", "direction", "digitSet", "baselineDirection", "leadingType",
+        "lineJoinType", "firstLineIndent", "startIndent", "endIndent", "spaceBefore",
+        "spaceAfter", "hangingRoman", "justification", "boxTextSize",
+        "boxVerticalAlignment", "boxAutoFitPolicy"
+    ];
+    for (var i = 0; i < directProperties.length; i++) {
+        var propertyName = directProperties[i];
+        if (args[propertyName] !== undefined) settings[propertyName] = args[propertyName];
+    }
+    return settings;
+}
+
+function aeApplyTextDocument(sourceText, args) {
+    var document = sourceText.value;
+    var settings = aeTextSettingsFromArgs(args);
+    var report = aeApplyTextSettings(document, settings);
+    var characterRanges = args.characterRanges || settings.characterRanges;
+    var paragraphRanges = args.paragraphRanges || settings.paragraphRanges;
+    var characterReports = aeApplyTextRanges(document, characterRanges, "characterRange");
+    var paragraphReports = aeApplyTextRanges(document, paragraphRanges, "paragraphRange");
+    if (args.time !== undefined && args.time !== null) sourceText.setValueAtTime(args.time, document);
+    else sourceText.setValue(document);
+    return {
+        document: aeSerializeTextDocument(document),
+        changedProperties: report.changed,
+        skippedProperties: report.skipped,
+        characterRanges: characterReports,
+        paragraphRanges: paragraphReports,
+        keyframes: aeSerializeKeyframes(sourceText)
+    };
+}
+
+function aeTextCommand(args) {
+    var comp = aeGetComposition(args);
+    if (args.action === "add") {
+        var created = args.boxSize ? comp.layers.addBoxText(args.boxSize) : comp.layers.addText(args.text || "");
+        created.name = args.name || "Text Layer";
+        if (args.position) {
+            created.property("ADBE Transform Group").property("ADBE Position").setValue(args.position);
+        }
+        if (args.startTime !== undefined) created.startTime = args.startTime;
+        if (args.inPoint !== undefined) created.inPoint = args.inPoint;
+        if (args.outPoint !== undefined) created.outPoint = args.outPoint;
+        else if (args.duration !== undefined) created.outPoint = created.startTime + args.duration;
+        var createdResult = aeApplyTextDocument(aeTextSourceProperty(created), args);
+        return {
+            layer: { index: created.index, name: created.name, boxText: !!args.boxSize },
+            text: createdResult
+        };
+    }
+
+    var layer = aeGetLayer(comp, args);
+    var sourceText = aeTextSourceProperty(layer);
+    if (args.action === "get") {
+        return {
+            layer: { index: layer.index, name: layer.name },
+            document: aeSerializeTextDocument(sourceText.value),
+            keyframes: aeSerializeKeyframes(sourceText)
+        };
+    }
+    if (args.action === "update" || args.action === "set") {
+        return {
+            layer: { index: layer.index, name: layer.name },
+            text: aeApplyTextDocument(sourceText, args)
+        };
+    }
+    throw new Error("Unsupported text action: " + args.action);
+}
+
 function aeLayerCommand(args) {
     var comp = aeGetComposition(args);
     if (args.action === "add") {
@@ -2531,6 +2727,7 @@ function aeCommand(args) {
         else if (args.operation === "effect") data = aeEffectCommand(args);
         else if (args.operation === "mask") data = aeMaskCommand(args);
         else if (args.operation === "shape") data = aeShapeCommand(args);
+        else if (args.operation === "text") data = aeTextCommand(args);
         else if (args.operation === "layer") data = aeLayerCommand(args);
         else if (args.operation === "composition") data = aeCompositionCommand(args);
         else if (args.operation === "project") data = aeProjectCommand(args);
