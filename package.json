@@ -1,7 +1,7 @@
 {
   "name": "after-effects-mcp-extended",
-  "version": "1.6.0",
-  "description": "Extended MCP server for Adobe After Effects with unified project control and visual frame capture",
+  "version": "1.7.0",
+  "description": "Extended MCP server for Adobe After Effects with unified project, media, render, and visual frame control",
   "main": "build/index.js",
   "type": "module",
   "scripts": {

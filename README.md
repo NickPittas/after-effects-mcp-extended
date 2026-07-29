@@ -4,7 +4,7 @@ This project is a fork of [Dakkshin/after-effects-mcp](https://github.com/Dakksh
 
 Extended capabilities include:
 
-- A unified `after-effects` tool for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, projects, and frame capture
+- A unified `after-effects` tool for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, project media, rendering, and frame capture
 - Recursive property-tree and keyframe inspection
 - General effect lifecycle management
 - Mask inspection, creation, editing, removal, and path animation
@@ -12,9 +12,11 @@ Extended capabilities include:
 - Point and box text with character, paragraph, range styling, and Source Text animation
 - Track mattes, blending modes, precomposing, and explicit time-remap animation
 - Batch imports, render-queue management, multiple outputs, AME dispatch, and reusable render/output templates
+- Media inventory, relinking, reloading, interpretation, file/sequence/placeholder/solid proxies, dependency traversal, and missing-media reports
+- Dependency manifests plus explicitly confirmed consolidation, unused-footage removal, and project reduction
 - Keyframe creation, editing, removal, interpolation, and easing controls
 - Layer creation, parenting, duplication, ordering, and switch management
-- Project import, saving, render-queue operations, and PNG frame capture
+- Project import, organization, saving, render-queue operations, and PNG frame capture
 - Text animators with character, word, and line range selectors
 - Improved bridge response tracking and direct rendered-frame image returns
 

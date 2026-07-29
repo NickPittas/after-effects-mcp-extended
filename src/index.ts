@@ -968,7 +968,7 @@ To apply the "cinematic-look" template:
 
 server.tool(
   "after-effects",
-  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, projects, imports, rendering, or frame capture.",
+  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, project media, imports, rendering, or frame capture.",
   {
     operation: z.enum([
       "inspect",
@@ -984,9 +984,9 @@ server.tool(
       "render",
       "frame"
     ]).describe("Capability area to use."),
-    action: z.string().describe("Action within the selected operation, such as get, set, add, update, remove, clear, import, or capture."),
+    action: z.string().describe("Action within the selected operation, such as get, set, add, update, remove, import, media, relink, reload, interpret, proxy, dependencies, manifest, cleanup, render, or capture."),
     parameters: z.record(z.string(), z.unknown()).optional().describe(
-      "Operation-specific parameters. Property paths are arrays of names, match names, or 1-based indexes."
+      "Operation-specific parameters. Project items can be selected by itemIndex, itemId, or itemName; property paths are arrays of names, match names, or 1-based indexes."
     )
   },
   async ({ operation, action, parameters = {} }) => {

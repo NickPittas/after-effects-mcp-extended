@@ -2935,6 +2935,119 @@ function aeAlphaModeValue(value) {
     return values[normalized];
 }
 
+function aeAlphaModeName(value) {
+    if (value === AlphaMode.IGNORE) return "ignore";
+    if (value === AlphaMode.STRAIGHT) return "straight";
+    if (value === AlphaMode.PREMULTIPLIED) return "premultiplied";
+    return String(value);
+}
+
+function aeFieldSeparationValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = aeNormalizedEnumName(value);
+    var values = {
+        off: FieldSeparationType.OFF,
+        upper: FieldSeparationType.UPPER_FIELD_FIRST,
+        upperfieldfirst: FieldSeparationType.UPPER_FIELD_FIRST,
+        lower: FieldSeparationType.LOWER_FIELD_FIRST,
+        lowerfieldfirst: FieldSeparationType.LOWER_FIELD_FIRST
+    };
+    if (values[normalized] === undefined) throw new Error("Unsupported field separation type: " + value);
+    return values[normalized];
+}
+
+function aeFieldSeparationName(value) {
+    if (value === FieldSeparationType.OFF) return "off";
+    if (value === FieldSeparationType.UPPER_FIELD_FIRST) return "upperFieldFirst";
+    if (value === FieldSeparationType.LOWER_FIELD_FIRST) return "lowerFieldFirst";
+    return String(value);
+}
+
+function aePulldownPhaseValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = aeNormalizedEnumName(value);
+    var values = {
+        off: PulldownPhase.OFF,
+        wssww: PulldownPhase.WSSWW,
+        sswww: PulldownPhase.SSWWW,
+        swwws: PulldownPhase.SWWWS,
+        wwwss: PulldownPhase.WWWSS,
+        wwssw: PulldownPhase.WWSSW,
+        wssww24padvance: PulldownPhase.WSSWW_24P_ADVANCE,
+        sswww24padvance: PulldownPhase.SSWWW_24P_ADVANCE,
+        swwws24padvance: PulldownPhase.SWWWS_24P_ADVANCE,
+        wwwss24padvance: PulldownPhase.WWWSS_24P_ADVANCE,
+        wwssw24padvance: PulldownPhase.WWSSW_24P_ADVANCE
+    };
+    if (values[normalized] === undefined) throw new Error("Unsupported pulldown phase: " + value);
+    return values[normalized];
+}
+
+function aePulldownPhaseName(value) {
+    if (value === PulldownPhase.OFF) return "off";
+    if (value === PulldownPhase.WSSWW) return "wssww";
+    if (value === PulldownPhase.SSWWW) return "sswww";
+    if (value === PulldownPhase.SWWWS) return "swwws";
+    if (value === PulldownPhase.WWWSS) return "wwwss";
+    if (value === PulldownPhase.WWSSW) return "wwssw";
+    if (value === PulldownPhase.WSSWW_24P_ADVANCE) return "wssww24pAdvance";
+    if (value === PulldownPhase.SSWWW_24P_ADVANCE) return "sswww24pAdvance";
+    if (value === PulldownPhase.SWWWS_24P_ADVANCE) return "swwws24pAdvance";
+    if (value === PulldownPhase.WWWSS_24P_ADVANCE) return "wwwss24pAdvance";
+    if (value === PulldownPhase.WWSSW_24P_ADVANCE) return "wwssw24pAdvance";
+    return String(value);
+}
+
+function aePulldownMethodValue(value) {
+    var normalized = aeNormalizedEnumName(value || "3:2");
+    if (normalized === "32" || normalized === "pulldown32") return PulldownMethod.PULLDOWN_3_2;
+    if (normalized === "advance24p" || normalized === "24padvance") return PulldownMethod.ADVANCE_24P;
+    throw new Error("Unsupported pulldown guess method: " + value);
+}
+
+function aeIsAVItem(item) {
+    return item instanceof CompItem || item instanceof FootageItem;
+}
+
+function aeGetProjectItem(args) {
+    var item = null;
+    var index = null;
+    var requestedIndex = args.itemIndex !== undefined ? args.itemIndex :
+        (args.compIndex !== undefined ? args.compIndex :
+        (args.index !== undefined ? args.index : undefined));
+    if (requestedIndex !== undefined) {
+        if (requestedIndex < 1 || requestedIndex > app.project.numItems) throw new Error("Project item index out of bounds: " + requestedIndex);
+        index = requestedIndex;
+        item = app.project.item(index);
+    } else {
+        var requestedId = args.itemId !== undefined ? args.itemId : args.id;
+        if (requestedId !== undefined) {
+            if (app.project.itemByID) item = app.project.itemByID(requestedId);
+            if (!item) {
+                for (var idIndex = 1; idIndex <= app.project.numItems; idIndex++) {
+                    if (app.project.item(idIndex).id === requestedId) {
+                        item = app.project.item(idIndex);
+                        break;
+                    }
+                }
+            }
+        } else {
+            var requestedName = args.itemName || args.compositionName;
+            if (requestedName) {
+                for (var nameIndex = 1; nameIndex <= app.project.numItems; nameIndex++) {
+                    if (app.project.item(nameIndex).name === requestedName) {
+                        item = app.project.item(nameIndex);
+                        break;
+                    }
+                }
+            } else if (args.active !== false && app.project.activeItem) item = app.project.activeItem;
+        }
+    }
+    if (!item) throw new Error("Project item not found. Use itemIndex, itemId, itemName, or an active project item.");
+    if (index === null) index = aeProjectItemIndex(item);
+    return { item: item, index: index };
+}
+
 function aeGetProjectFolder(args) {
     var folder = null;
     if (args.folderIndex !== undefined) folder = app.project.item(args.folderIndex);
@@ -2965,6 +3078,318 @@ function aeProjectItemSummary(item) {
         else if (item.mainSource && item.mainSource.file) result.path = item.mainSource.file.fsName;
     } catch (_itemPathReadError) {}
     return result;
+}
+
+function aeFootageSourceType(source) {
+    if (!source) return "none";
+    if (source instanceof FileSource) return "file";
+    if (source instanceof SolidSource) return "solid";
+    if (source instanceof PlaceholderSource) return "placeholder";
+    return "source";
+}
+
+function aeFootageSourceSummary(source) {
+    if (!source) return null;
+    var result = { type: aeFootageSourceType(source) };
+    try { result.isStill = source.isStill; } catch (_sourceStillError) {}
+    try { result.hasAlpha = source.hasAlpha; } catch (_sourceAlphaError) {}
+    try { result.alphaMode = aeAlphaModeName(source.alphaMode); } catch (_sourceAlphaModeError) {}
+    try { result.invertAlpha = source.invertAlpha; } catch (_sourceInvertAlphaError) {}
+    try { result.premulColor = source.premulColor; } catch (_sourcePremulError) {}
+    try { result.nativeFrameRate = source.nativeFrameRate; } catch (_sourceNativeRateError) {}
+    try { result.conformFrameRate = source.conformFrameRate; } catch (_sourceConformRateError) {}
+    try { result.displayFrameRate = source.displayFrameRate; } catch (_sourceDisplayRateError) {}
+    try { result.fieldSeparationType = aeFieldSeparationName(source.fieldSeparationType); } catch (_sourceFieldError) {}
+    try { result.highQualityFieldSeparation = source.highQualityFieldSeparation; } catch (_sourceHighQualityFieldError) {}
+    try { result.removePulldown = aePulldownPhaseName(source.removePulldown); } catch (_sourcePulldownError) {}
+    try { if (!source.isStill) result.loop = source.loop; } catch (_sourceLoopError) {}
+    try { if (source.file) result.path = source.file.fsName; } catch (_sourceFileError) {}
+    try { if (source.missingFootagePath) result.missingPath = source.missingFootagePath; } catch (_sourceMissingPathError) {}
+    try { if (source instanceof SolidSource) result.color = source.color; } catch (_sourceColorError) {}
+    try { if (source.colorProfile) result.colorProfile = source.colorProfile; } catch (_sourceProfileError) {}
+    return result;
+}
+
+function aeDetailedProjectItemSummary(item, args) {
+    var result = aeProjectItemSummary(item);
+    try { result.comment = item.comment; } catch (_itemCommentError) {}
+    try { result.label = item.label; } catch (_itemLabelError) {}
+    try { result.selected = item.selected; } catch (_itemSelectedError) {}
+    if (aeIsAVItem(item)) {
+        try { result.width = item.width; } catch (_itemWidthError) {}
+        try { result.height = item.height; } catch (_itemHeightError) {}
+        try { result.duration = item.duration; } catch (_itemDurationError) {}
+        try { result.frameRate = item.frameRate; } catch (_itemFrameRateError) {}
+        try { result.pixelAspect = item.pixelAspect; } catch (_itemPixelAspectError) {}
+        try { result.hasAudio = item.hasAudio; } catch (_itemAudioError) {}
+        try { result.hasVideo = item.hasVideo; } catch (_itemVideoError) {}
+        try { result.footageMissing = item.footageMissing; } catch (_itemMissingError) {}
+        try { result.useProxy = item.useProxy; } catch (_itemUseProxyError) {}
+        try { result.proxySource = aeFootageSourceSummary(item.proxySource); } catch (_itemProxyError) {}
+        try { result.isMediaReplacementCompatible = item.isMediaReplacementCompatible; } catch (_itemReplacementError) {}
+        if (!args || args.includeUsage !== false) {
+            try {
+                var usage = item.usedIn;
+                result.usedIn = [];
+                for (var usedIndex = 0; usedIndex < usage.length; usedIndex++) {
+                    result.usedIn.push({
+                        index: aeProjectItemIndex(usage[usedIndex]),
+                        id: usage[usedIndex].id,
+                        name: usage[usedIndex].name
+                    });
+                }
+            } catch (_itemUsageError) {}
+        }
+    }
+    if (item instanceof FootageItem) {
+        try { result.mainSource = aeFootageSourceSummary(item.mainSource); } catch (_itemMainSourceError) {}
+    }
+    if (item instanceof CompItem) result.numLayers = item.numLayers;
+    return result;
+}
+
+function aeApplyInterpretation(item, args) {
+    var sourceKind = aeNormalizedEnumName(args.source || "main");
+    var source = null;
+    if (sourceKind === "proxy") {
+        if (!aeIsAVItem(item) || !item.proxySource) throw new Error("Project item has no proxy source.");
+        source = item.proxySource;
+    } else {
+        if (!(item instanceof FootageItem)) throw new Error("Main-source interpretation requires a footage item.");
+        source = item.mainSource;
+    }
+    var changed = [];
+    if (args.guessAlpha === true) {
+        source.guessAlphaMode();
+        changed.push("guessAlpha");
+    }
+    if (args.fieldSeparationType !== undefined) {
+        source.fieldSeparationType = aeFieldSeparationValue(args.fieldSeparationType);
+        changed.push("fieldSeparationType");
+    }
+    if (args.conformFrameRate !== undefined) {
+        source.conformFrameRate = args.conformFrameRate;
+        changed.push("conformFrameRate");
+    }
+    if (args.removePulldown !== undefined) {
+        source.removePulldown = aePulldownPhaseValue(args.removePulldown);
+        changed.push("removePulldown");
+    }
+    if (args.guessPulldown !== undefined && args.guessPulldown !== false) {
+        source.guessPulldown(aePulldownMethodValue(typeof args.guessPulldown === "string" ? args.guessPulldown : args.pulldownMethod));
+        changed.push("guessPulldown");
+    }
+    if (args.highQualityFieldSeparation !== undefined) {
+        source.highQualityFieldSeparation = args.highQualityFieldSeparation;
+        changed.push("highQualityFieldSeparation");
+    }
+    if (args.loop !== undefined) {
+        source.loop = args.loop;
+        changed.push("loop");
+    }
+    if (args.alphaMode !== undefined) {
+        source.alphaMode = aeAlphaModeValue(args.alphaMode);
+        changed.push("alphaMode");
+    }
+    if (args.invertAlpha !== undefined) {
+        source.invertAlpha = args.invertAlpha;
+        changed.push("invertAlpha");
+    }
+    if (args.premulColor !== undefined) {
+        source.premulColor = args.premulColor;
+        changed.push("premulColor");
+    }
+    return { source: sourceKind === "proxy" ? "proxy" : "main", changedProperties: changed, interpretation: aeFootageSourceSummary(source) };
+}
+
+function aeRelinkProjectItem(args) {
+    var itemResult = aeGetProjectItem(args);
+    var item = itemResult.item;
+    if (!(item instanceof FootageItem)) throw new Error("Relink requires a footage item.");
+    if (!args.path) throw new Error("Relink path is required.");
+    var replacement = new File(args.path);
+    if (!replacement.exists) throw new Error("Replacement file not found: " + args.path);
+    if (args.sequence === true) item.replaceWithSequence(replacement, args.forceAlphabetical === true);
+    else item.replace(replacement);
+    var interpretation = aeApplyInterpretation(item, args);
+    return {
+        item: aeDetailedProjectItemSummary(item, args),
+        sequence: args.sequence === true,
+        interpretationChanges: interpretation.changedProperties
+    };
+}
+
+function aeReloadProjectItem(args) {
+    var itemResult = aeGetProjectItem(args);
+    var item = itemResult.item;
+    if (!(item instanceof FootageItem) || !(item.mainSource instanceof FileSource)) throw new Error("Reload requires file-based footage.");
+    item.mainSource.reload();
+    return aeDetailedProjectItemSummary(item, args);
+}
+
+function aeProxyProjectItem(args) {
+    var itemResult = aeGetProjectItem(args);
+    var item = itemResult.item;
+    if (!aeIsAVItem(item)) throw new Error("Proxy operations require a composition or footage item.");
+    var mode = aeNormalizedEnumName(args.mode || "set");
+    if (mode === "none" || mode === "remove" || mode === "clear") item.setProxyToNone();
+    else if (mode === "enable" || mode === "use") {
+        if (!item.proxySource) throw new Error("Project item has no proxy source to enable.");
+        item.useProxy = true;
+    } else if (mode === "disable" || mode === "bypass") item.useProxy = false;
+    else if (mode === "placeholder") {
+        item.setProxyWithPlaceholder(
+            args.name || (item.name + " Proxy"),
+            args.width || item.width,
+            args.height || item.height,
+            args.frameRate || item.frameRate || 25,
+            args.duration !== undefined ? args.duration : item.duration
+        );
+    } else if (mode === "solid") {
+        item.setProxyWithSolid(
+            args.color || [0, 0, 0],
+            args.name || (item.name + " Proxy"),
+            args.width || item.width,
+            args.height || item.height,
+            args.pixelAspect || item.pixelAspect || 1
+        );
+    } else {
+        if (!args.path) throw new Error("Proxy file path is required.");
+        var proxyFile = new File(args.path);
+        if (!proxyFile.exists) throw new Error("Proxy file not found: " + args.path);
+        if (mode === "sequence") item.setProxyWithSequence(proxyFile, args.forceAlphabetical === true);
+        else item.setProxy(proxyFile);
+    }
+    if (args.interpretation) aeApplyInterpretation(item, aeMergeObjects(args.interpretation, { source: "proxy" }));
+    return aeDetailedProjectItemSummary(item, args);
+}
+
+function aeProjectMediaList(args) {
+    var results = [];
+    var matched = 0;
+    var offset = args.offset || 0;
+    var limit = args.maxItems !== undefined ? args.maxItems : 100;
+    var typeFilter = args.type ? aeNormalizedEnumName(args.type) : "";
+    var nameFilter = args.nameContains ? String(args.nameContains).toLowerCase() : "";
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var item = app.project.item(i);
+        var itemType = item instanceof CompItem ? "composition" : (item instanceof FolderItem ? "folder" : "footage");
+        if (typeFilter && typeFilter !== itemType && !(typeFilter === "comp" && itemType === "composition")) continue;
+        if (nameFilter && item.name.toLowerCase().indexOf(nameFilter) < 0) continue;
+        if (args.missingOnly === true) {
+            var missing = false;
+            try { missing = item.footageMissing === true; } catch (_mediaMissingReadError) {}
+            try { if (item.proxySource && item.proxySource.missingFootagePath) missing = true; } catch (_mediaProxyMissingReadError) {}
+            if (!missing) continue;
+        }
+        if (args.unusedOnly === true) {
+            if (!(item instanceof FootageItem)) continue;
+            try { if (item.usedIn.length > 0) continue; } catch (_mediaUnusedReadError) { continue; }
+        }
+        if (args.proxyOnly === true) {
+            try { if (!item.proxySource) continue; } catch (_mediaProxyReadError) { continue; }
+        }
+        if (matched >= offset && results.length < limit) results.push(aeDetailedProjectItemSummary(item, args));
+        matched++;
+    }
+    return { totalMatched: matched, offset: offset, count: results.length, items: results };
+}
+
+function aeDependencyReport(args) {
+    var rootResult = aeGetProjectItem(args);
+    var root = rootResult.item;
+    var dependencies = [];
+    var seen = {};
+    var includeNested = args.recursive !== false;
+    function visitComposition(comp, depth) {
+        for (var layerIndex = 1; layerIndex <= comp.numLayers; layerIndex++) {
+            var layer = comp.layer(layerIndex);
+            var source = null;
+            try { source = layer.source; } catch (_dependencySourceError) {}
+            if (!source) continue;
+            var key = String(source.id);
+            if (!seen[key]) {
+                seen[key] = true;
+                var detail = aeDetailedProjectItemSummary(source, args);
+                detail.via = { compositionId: comp.id, compositionName: comp.name, layerIndex: layerIndex, layerName: layer.name, depth: depth };
+                dependencies.push(detail);
+            }
+            if (includeNested && source instanceof CompItem) visitComposition(source, depth + 1);
+        }
+    }
+    if (root instanceof CompItem) visitComposition(root, 1);
+    var externalFiles = [];
+    var missing = [];
+    for (var dependencyIndex = 0; dependencyIndex < dependencies.length; dependencyIndex++) {
+        var dependency = dependencies[dependencyIndex];
+        if (dependency.path) externalFiles.push(dependency.path);
+        if (dependency.footageMissing || (dependency.mainSource && dependency.mainSource.missingPath)) missing.push(dependency);
+    }
+    return {
+        root: aeDetailedProjectItemSummary(root, args),
+        recursive: includeNested,
+        count: dependencies.length,
+        dependencies: dependencies,
+        externalFiles: externalFiles,
+        missing: missing
+    };
+}
+
+function aeProjectMediaManifest(args) {
+    var items = [];
+    var files = [];
+    var uniqueFiles = {};
+    var missing = [];
+    for (var i = 1; i <= app.project.numItems; i++) {
+        var item = app.project.item(i);
+        if (!(item instanceof FootageItem)) continue;
+        var detail = aeDetailedProjectItemSummary(item, args);
+        items.push(detail);
+        if (detail.path) {
+            var mainKey = detail.path.toLowerCase();
+            if (!uniqueFiles[mainKey]) {
+                uniqueFiles[mainKey] = true;
+                files.push({ path: detail.path, kind: "main", itemId: detail.id, itemName: detail.name });
+            }
+        }
+        if (detail.proxySource && detail.proxySource.path) {
+            var proxyKey = detail.proxySource.path.toLowerCase();
+            if (!uniqueFiles[proxyKey]) {
+                uniqueFiles[proxyKey] = true;
+                files.push({ path: detail.proxySource.path, kind: "proxy", itemId: detail.id, itemName: detail.name });
+            }
+        }
+        if (detail.footageMissing || (detail.mainSource && detail.mainSource.missingPath)) missing.push(detail);
+    }
+    return { itemCount: items.length, uniqueFileCount: files.length, missingCount: missing.length, files: files, missing: missing, items: args.includeItems === false ? undefined : items };
+}
+
+function aeCleanupProject(args) {
+    if (args.confirm !== true) throw new Error("Project cleanup requires confirm: true.");
+    var mode = aeNormalizedEnumName(args.mode || "");
+    var before = app.project.numItems;
+    var removed = 0;
+    if (mode === "consolidate" || mode === "consolidatefootage") removed = app.project.consolidateFootage();
+    else if (mode === "removeunused" || mode === "removeunusedfootage") removed = app.project.removeUnusedFootage();
+    else if (mode === "reduce" || mode === "reduceproject") {
+        var keep = [];
+        if (args.useSelection === true) {
+            var selection = app.project.selection;
+            for (var selectedIndex = 0; selectedIndex < selection.length; selectedIndex++) keep.push(selection[selectedIndex]);
+        }
+        if (args.keepItems) {
+            for (var keepIndex = 0; keepIndex < args.keepItems.length; keepIndex++) keep.push(aeGetProjectItem(args.keepItems[keepIndex]).item);
+        }
+        if (args.keepItemIndices) {
+            for (var indexIndex = 0; indexIndex < args.keepItemIndices.length; indexIndex++) keep.push(aeGetProjectItem({ itemIndex: args.keepItemIndices[indexIndex] }).item);
+        }
+        if (args.keepItemIds) {
+            for (var idIndex = 0; idIndex < args.keepItemIds.length; idIndex++) keep.push(aeGetProjectItem({ itemId: args.keepItemIds[idIndex] }).item);
+        }
+        if (!keep.length) throw new Error("Reduce Project requires useSelection or at least one keep item.");
+        removed = app.project.reduceProject(keep);
+    } else throw new Error("Unsupported cleanup mode: " + args.mode);
+    return { mode: mode, removed: removed, before: before, remaining: app.project.numItems };
 }
 
 function aeImportOne(importArgs) {
@@ -3286,6 +3711,31 @@ function aeRenderCommand(args) {
 
 function aeProjectCommand(args) {
     if (args.action === "get") return aeInspect({ scope: "project", maxItems: args.maxItems });
+    if (args.action === "media") return aeProjectMediaList(args);
+    if (args.action === "getItem") return aeDetailedProjectItemSummary(aeGetProjectItem(args).item, args);
+    if (args.action === "updateItem") {
+        var updateResult = aeGetProjectItem(args);
+        var updateItem = updateResult.item;
+        var updateChanges = [];
+        if (args.newName !== undefined) { updateItem.name = args.newName; updateChanges.push("name"); }
+        if (args.comment !== undefined) { updateItem.comment = args.comment; updateChanges.push("comment"); }
+        if (args.label !== undefined) { updateItem.label = args.label; updateChanges.push("label"); }
+        if (args.selected !== undefined) { updateItem.selected = args.selected; updateChanges.push("selected"); }
+        if (args.useProxy !== undefined) {
+            if (!aeIsAVItem(updateItem)) throw new Error("useProxy requires a composition or footage item.");
+            if (args.useProxy === true && !updateItem.proxySource) throw new Error("Project item has no proxy source to enable.");
+            updateItem.useProxy = args.useProxy;
+            updateChanges.push("useProxy");
+        }
+        if (args.moveToRoot === true) {
+            updateItem.parentFolder = app.project.rootFolder;
+            updateChanges.push("parentFolder");
+        } else if (args.folderIndex !== undefined || args.folderId !== undefined || args.folderName) {
+            updateItem.parentFolder = aeGetProjectFolder(args);
+            updateChanges.push("parentFolder");
+        }
+        return { item: aeDetailedProjectItemSummary(updateItem, args), changedProperties: updateChanges };
+    }
     if (args.action === "import") {
         var importSpecs = [];
         if (args.items) importSpecs = args.items;
@@ -3298,9 +3748,57 @@ function aeProjectCommand(args) {
         for (var i = 0; i < importSpecs.length; i++) importedItems.push(aeImportOne(aeMergeObjects(args, importSpecs[i])));
         return { count: importedItems.length, items: importedItems };
     }
+    if (args.action === "relink") {
+        if (args.items && args.items.length) {
+            var relinked = [];
+            for (var relinkIndex = 0; relinkIndex < args.items.length; relinkIndex++) {
+                var relinkArgs = aeMergeObjects(args, args.items[relinkIndex]);
+                try {
+                    relinked.push({ status: "success", data: aeRelinkProjectItem(relinkArgs) });
+                } catch (relinkError) {
+                    relinked.push({ status: "error", message: relinkError.toString(), selector: args.items[relinkIndex] });
+                }
+            }
+            return { count: relinked.length, results: relinked };
+        }
+        return aeRelinkProjectItem(args);
+    }
+    if (args.action === "reload") {
+        var reloadSpecs = [];
+        if (args.items && args.items.length) reloadSpecs = args.items;
+        else if (args.all === true) {
+            for (var reloadProjectIndex = 1; reloadProjectIndex <= app.project.numItems; reloadProjectIndex++) {
+                var reloadCandidate = app.project.item(reloadProjectIndex);
+                if (reloadCandidate instanceof FootageItem && reloadCandidate.mainSource instanceof FileSource) {
+                    reloadSpecs.push({ itemId: reloadCandidate.id });
+                }
+            }
+        }
+        if (reloadSpecs.length) {
+            var reloaded = [];
+            for (var reloadIndex = 0; reloadIndex < reloadSpecs.length; reloadIndex++) {
+                try {
+                    reloaded.push({ status: "success", data: aeReloadProjectItem(aeMergeObjects(args, reloadSpecs[reloadIndex])) });
+                } catch (reloadError) {
+                    reloaded.push({ status: "error", message: reloadError.toString(), selector: reloadSpecs[reloadIndex] });
+                }
+            }
+            return { count: reloaded.length, results: reloaded };
+        }
+        return aeReloadProjectItem(args);
+    }
+    if (args.action === "interpret") {
+        var interpretResult = aeGetProjectItem(args);
+        var interpretation = aeApplyInterpretation(interpretResult.item, args);
+        return { item: aeDetailedProjectItemSummary(interpretResult.item, args), changedProperties: interpretation.changedProperties, source: interpretation.source };
+    }
+    if (args.action === "proxy") return aeProxyProjectItem(args);
+    if (args.action === "dependencies") return aeDependencyReport(args);
+    if (args.action === "manifest") return aeProjectMediaManifest(args);
+    if (args.action === "cleanup") return aeCleanupProject(args);
     if (args.action === "createFolder") {
         var folder = app.project.items.addFolder(args.name || "Folder");
-        return { index: folder.index, id: folder.id, name: folder.name };
+        return { index: aeProjectItemIndex(folder), id: folder.id, name: folder.name };
     }
     if (args.action === "save") {
         if (args.path) app.project.save(new File(args.path));
