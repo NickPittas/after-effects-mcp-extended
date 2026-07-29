@@ -1676,6 +1676,14 @@ function aeResolveProperty(root, propertyPath) {
 
 function aeSafeValue(value) {
     if (value === null || value === undefined) return value;
+    if (value instanceof Shape) {
+        return {
+            vertices: value.vertices,
+            inTangents: value.inTangents,
+            outTangents: value.outTangents,
+            closed: value.closed
+        };
+    }
     if (value instanceof TextDocument) {
         return {
             text: value.text,
@@ -1695,6 +1703,24 @@ function aeSafeValue(value) {
     } catch (_valueError) {
         return value.toString();
     }
+}
+
+function aeShapeFromValue(value) {
+    if (value instanceof Shape) return value;
+    if (!value || !value.vertices || value.vertices.length < 2) {
+        throw new Error("Shape values require at least two vertices.");
+    }
+    var shape = new Shape();
+    shape.vertices = value.vertices;
+    if (value.inTangents) shape.inTangents = value.inTangents;
+    if (value.outTangents) shape.outTangents = value.outTangents;
+    shape.closed = value.closed !== undefined ? value.closed : true;
+    return shape;
+}
+
+function aeCoercePropertyValue(property, value) {
+    if (property.matchName === "ADBE Mask Shape") return aeShapeFromValue(value);
+    return value;
 }
 
 function aeInterpolationName(value) {
@@ -1867,8 +1893,9 @@ function aePropertyCommand(args) {
     var property = aeResolveProperty(layer, args.propertyPath);
     if (args.action === "get") return aeSerializeProperty(property, 0, args.depth || 0, true);
     if (args.action === "set") {
-        if (args.time !== undefined && args.time !== null) property.setValueAtTime(args.time, args.value);
-        else property.setValue(args.value);
+        var propertyValue = aeCoercePropertyValue(property, args.value);
+        if (args.time !== undefined && args.time !== null) property.setValueAtTime(args.time, propertyValue);
+        else property.setValue(propertyValue);
         return { property: property.name, value: aeSafeValue(property.value) };
     }
     if (args.action === "expression") {
@@ -1904,14 +1931,14 @@ function aeKeyframeCommand(args) {
     var property = aeResolveProperty(layer, args.propertyPath);
     if (args.action === "get") return aeSerializeKeyframes(property);
     if (args.action === "set") {
-        property.setValueAtTime(args.time, args.value);
+        property.setValueAtTime(args.time, aeCoercePropertyValue(property, args.value));
         var index = property.nearestKeyIndex(args.time);
         aeApplyKeyframeOptions(property, index, args);
         return { property: property.name, keyframe: aeSerializeKeyframes(property)[index - 1] };
     }
     if (args.action === "update") {
         var updateIndex = args.index || property.nearestKeyIndex(args.time);
-        if (args.value !== undefined) property.setValueAtKey(updateIndex, args.value);
+        if (args.value !== undefined) property.setValueAtKey(updateIndex, aeCoercePropertyValue(property, args.value));
         aeApplyKeyframeOptions(property, updateIndex, args);
         return { property: property.name, keyframe: aeSerializeKeyframes(property)[updateIndex - 1] };
     }
@@ -1972,6 +1999,182 @@ function aeEffectCommand(args) {
         return { name: effect.name, index: effect.propertyIndex };
     }
     throw new Error("Unsupported effect action: " + args.action);
+}
+
+function aeMaskModeName(mode) {
+    if (mode === MaskMode.NONE) return "none";
+    if (mode === MaskMode.SUBTRACT) return "subtract";
+    if (mode === MaskMode.INTERSECT) return "intersect";
+    if (mode === MaskMode.LIGHTEN) return "lighten";
+    if (mode === MaskMode.DARKEN) return "darken";
+    if (mode === MaskMode.DIFFERENCE) return "difference";
+    return "add";
+}
+
+function aeMaskModeValue(mode) {
+    var normalized = String(mode || "add").toLowerCase();
+    var modes = {
+        none: MaskMode.NONE,
+        add: MaskMode.ADD,
+        subtract: MaskMode.SUBTRACT,
+        intersect: MaskMode.INTERSECT,
+        lighten: MaskMode.LIGHTEN,
+        darken: MaskMode.DARKEN,
+        difference: MaskMode.DIFFERENCE
+    };
+    if (modes[normalized] === undefined) throw new Error("Unsupported mask mode: " + mode);
+    return modes[normalized];
+}
+
+function aeGetMasks(layer) {
+    var masks = layer.property("ADBE Mask Parade");
+    if (!masks) throw new Error("This layer cannot contain masks.");
+    return masks;
+}
+
+function aeGetMask(masks, args) {
+    var mask = null;
+    if (args.maskIndex !== undefined && args.maskIndex !== null) {
+        if (args.maskIndex < 1 || args.maskIndex > masks.numProperties) {
+            throw new Error("Mask index out of bounds: " + args.maskIndex);
+        }
+        mask = masks.property(args.maskIndex);
+    } else if (args.maskName) {
+        mask = masks.property(args.maskName);
+    }
+    if (!mask) throw new Error("Mask not found. Pass maskIndex or maskName.");
+    return mask;
+}
+
+function aeMaskShapeFromArgs(args) {
+    var shapeValue = args.shape || null;
+    var rect = args.rect || args.maskRect;
+    var vertices = args.vertices || args.maskPath;
+    if (rect) {
+        var top = rect.top !== undefined ? rect.top : 0;
+        var left = rect.left !== undefined ? rect.left : 0;
+        var width = rect.width;
+        var height = rect.height;
+        if (width === undefined || height === undefined) throw new Error("Mask rect requires width and height.");
+        shapeValue = {
+            vertices: [
+                [left, top],
+                [left + width, top],
+                [left + width, top + height],
+                [left, top + height]
+            ],
+            closed: true
+        };
+    } else if (vertices) {
+        shapeValue = {
+            vertices: vertices,
+            inTangents: args.inTangents,
+            outTangents: args.outTangents,
+            closed: args.closed !== undefined ? args.closed : true
+        };
+    }
+    return shapeValue ? aeShapeFromValue(shapeValue) : null;
+}
+
+function aeSerializeMask(mask) {
+    var path = mask.property("ADBE Mask Shape");
+    var feather = mask.property("ADBE Mask Feather");
+    var opacity = mask.property("ADBE Mask Opacity");
+    var expansion = mask.property("ADBE Mask Offset");
+    var result = {
+        index: mask.propertyIndex,
+        name: mask.name,
+        mode: aeMaskModeName(mask.maskMode),
+        inverted: mask.inverted,
+        rotoBezier: mask.rotoBezier,
+        shape: aeSafeValue(path.value),
+        feather: aeSafeValue(feather.value),
+        opacity: opacity.value,
+        expansion: expansion.value,
+        pathKeyframes: aeSerializeKeyframes(path)
+    };
+    try { result.locked = mask.locked; } catch (_maskLockedError) {}
+    try { result.color = mask.color; } catch (_maskColorError) {}
+    return result;
+}
+
+function aeUpdateMask(mask, args) {
+    var changed = [];
+    var shape = aeMaskShapeFromArgs(args);
+    if (shape) {
+        var path = mask.property("ADBE Mask Shape");
+        if (args.time !== undefined && args.time !== null) path.setValueAtTime(args.time, shape);
+        else path.setValue(shape);
+        changed.push("shape");
+    }
+    if (args.name !== undefined || args.newName !== undefined) {
+        mask.name = args.name !== undefined ? args.name : args.newName;
+        changed.push("name");
+    }
+    if (args.mode !== undefined) {
+        mask.maskMode = aeMaskModeValue(args.mode);
+        changed.push("mode");
+    }
+    if (args.inverted !== undefined) {
+        mask.inverted = args.inverted;
+        changed.push("inverted");
+    }
+    if (args.rotoBezier !== undefined) {
+        mask.rotoBezier = args.rotoBezier;
+        changed.push("rotoBezier");
+    }
+    if (args.locked !== undefined) {
+        mask.locked = args.locked;
+        changed.push("locked");
+    }
+    if (args.color !== undefined) {
+        mask.color = args.color;
+        changed.push("color");
+    }
+    if (args.feather !== undefined) {
+        mask.property("ADBE Mask Feather").setValue(args.feather);
+        changed.push("feather");
+    }
+    if (args.opacity !== undefined) {
+        mask.property("ADBE Mask Opacity").setValue(args.opacity);
+        changed.push("opacity");
+    }
+    if (args.expansion !== undefined) {
+        mask.property("ADBE Mask Offset").setValue(args.expansion);
+        changed.push("expansion");
+    }
+    return changed;
+}
+
+function aeMaskCommand(args) {
+    var comp = aeGetComposition(args);
+    var layer = aeGetLayer(comp, args);
+    var masks = aeGetMasks(layer);
+    if (args.action === "get") {
+        if (args.maskIndex !== undefined || args.maskName) return aeSerializeMask(aeGetMask(masks, args));
+        var maskResults = [];
+        for (var i = 1; i <= masks.numProperties; i++) maskResults.push(aeSerializeMask(masks.property(i)));
+        return { count: maskResults.length, masks: maskResults };
+    }
+    if (args.action === "add") {
+        var shape = aeMaskShapeFromArgs(args);
+        if (!shape) throw new Error("Adding a mask requires shape, vertices, maskPath, rect, or maskRect.");
+        var added = masks.addProperty("ADBE Mask Atom");
+        var addedChanges = aeUpdateMask(added, args);
+        return { mask: aeSerializeMask(added), changedProperties: addedChanges };
+    }
+    var mask = aeGetMask(masks, args);
+    if (args.action === "update" || args.action === "set") {
+        var changed = aeUpdateMask(mask, args);
+        return { mask: aeSerializeMask(mask), changedProperties: changed };
+    }
+    if (args.action === "remove") {
+        var removedName = mask.name;
+        var removedIndex = mask.propertyIndex;
+        mask.remove();
+        return { removed: removedName, removedIndex: removedIndex, remaining: masks.numProperties };
+    }
+    throw new Error("Unsupported mask action: " + args.action);
 }
 
 function aeLayerCommand(args) {
@@ -2130,6 +2333,7 @@ function aeCommand(args) {
         else if (args.operation === "property") data = aePropertyCommand(args);
         else if (args.operation === "keyframe") data = aeKeyframeCommand(args);
         else if (args.operation === "effect") data = aeEffectCommand(args);
+        else if (args.operation === "mask") data = aeMaskCommand(args);
         else if (args.operation === "layer") data = aeLayerCommand(args);
         else if (args.operation === "composition") data = aeCompositionCommand(args);
         else if (args.operation === "project") data = aeProjectCommand(args);

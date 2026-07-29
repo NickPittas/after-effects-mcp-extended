@@ -4,9 +4,10 @@ This project is a fork of [Dakkshin/after-effects-mcp](https://github.com/Dakksh
 
 Extended capabilities include:
 
-- A unified `after-effects` tool for inspection, properties, keyframes, effects, layers, compositions, projects, and frame capture
+- A unified `after-effects` tool for inspection, properties, keyframes, effects, masks, layers, compositions, projects, and frame capture
 - Recursive property-tree and keyframe inspection
 - General effect lifecycle management
+- Mask inspection, creation, editing, removal, and path animation
 - Keyframe creation, editing, removal, interpolation, and easing controls
 - Layer creation, parenting, duplication, ordering, and switch management
 - Project import, saving, render-queue operations, and PNG frame capture

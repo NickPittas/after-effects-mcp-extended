@@ -1,6 +1,6 @@
 // install-bridge.js
 // Script to install the After Effects MCP Bridge to the ScriptUI Panels folder
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import { fileURLToPath } from 'url';
@@ -91,11 +91,28 @@ try {
       execSync(`sudo cp "${sourceScript}" "${destinationScript}"`, { stdio: 'inherit' });
     }
   } else {
-    // Try to use PowerShell with elevated privileges on Windows
-    const command = `
-      Start-Process PowerShell -Verb RunAs -ArgumentList "-Command Copy-Item -Path '${sourceScript.replace(/\\/g, '\\\\')}' -Destination '${destinationScript.replace(/\\/g, '\\\\')}' -Force"
-    `;
-    execSync(`powershell -Command "${command}"`, { stdio: 'inherit' });
+    // Run the copy in an elevated PowerShell process and wait for its real exit code.
+    const quotePowerShell = (value) => value.replace(/'/g, "''");
+    const copyCommand =
+      `Copy-Item -LiteralPath '${quotePowerShell(sourceScript)}' ` +
+      `-Destination '${quotePowerShell(destinationScript)}' -Force`;
+    const encodedCommand = Buffer.from(copyCommand, 'utf16le').toString('base64');
+    const elevationCommand =
+      `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -Wait -PassThru ` +
+      `-ArgumentList '-NoProfile','-EncodedCommand','${encodedCommand}'; ` +
+      `exit $process.ExitCode`;
+    execFileSync(
+      'powershell.exe',
+      ['-NoProfile', '-Command', elevationCommand],
+      { stdio: 'inherit' }
+    );
+  }
+
+  if (
+    !fs.existsSync(destinationScript) ||
+    !fs.readFileSync(sourceScript).equals(fs.readFileSync(destinationScript))
+  ) {
+    throw new Error('Bridge copy verification failed: installed file differs from the build output.');
   }
 
   console.log('Bridge script installed successfully!');
@@ -120,4 +137,4 @@ try {
     console.error('3. You may need to run as administrator or use File Explorer with admin rights');
   }
   process.exit(1);
-} 
+}
