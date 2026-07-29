@@ -2896,15 +2896,407 @@ function aeCompositionCommand(args) {
     throw new Error("Unsupported composition action: " + args.action);
 }
 
+function aeMergeObjects(base, override) {
+    var result = {};
+    var key;
+    if (base) {
+        for (key in base) if (base.hasOwnProperty(key)) result[key] = base[key];
+    }
+    if (override) {
+        for (key in override) if (override.hasOwnProperty(key)) result[key] = override[key];
+    }
+    return result;
+}
+
+function aeImportAsValue(value) {
+    var normalized = aeNormalizedEnumName(value || "footage");
+    var values = {
+        footage: ImportAsType.FOOTAGE,
+        comp: ImportAsType.COMP,
+        composition: ImportAsType.COMP,
+        compcroppedlayers: ImportAsType.COMP_CROPPED_LAYERS,
+        compositioncroppedlayers: ImportAsType.COMP_CROPPED_LAYERS,
+        project: ImportAsType.PROJECT
+    };
+    if (values[normalized] === undefined) throw new Error("Unsupported importAs value: " + value);
+    return values[normalized];
+}
+
+function aeAlphaModeValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = aeNormalizedEnumName(value);
+    var values = {
+        ignore: AlphaMode.IGNORE,
+        straight: AlphaMode.STRAIGHT,
+        premultiplied: AlphaMode.PREMULTIPLIED,
+        premul: AlphaMode.PREMULTIPLIED
+    };
+    if (values[normalized] === undefined) throw new Error("Unsupported alpha mode: " + value);
+    return values[normalized];
+}
+
+function aeGetProjectFolder(args) {
+    var folder = null;
+    if (args.folderIndex !== undefined) folder = app.project.item(args.folderIndex);
+    else if (args.folderId !== undefined && app.project.itemByID) folder = app.project.itemByID(args.folderId);
+    else if (args.folderName) {
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof FolderItem && item.name === args.folderName) {
+                folder = item;
+                break;
+            }
+        }
+    }
+    if (folder && !(folder instanceof FolderItem)) throw new Error("Destination project item is not a folder.");
+    return folder;
+}
+
+function aeProjectItemSummary(item) {
+    var result = {
+        index: aeProjectItemIndex(item),
+        id: item.id,
+        name: item.name,
+        type: item instanceof CompItem ? "composition" : (item instanceof FolderItem ? "folder" : "footage")
+    };
+    try { if (item.parentFolder) result.parentFolder = { id: item.parentFolder.id, name: item.parentFolder.name }; } catch (_parentFolderReadError) {}
+    try {
+        if (item.file) result.path = item.file.fsName;
+        else if (item.mainSource && item.mainSource.file) result.path = item.mainSource.file.fsName;
+    } catch (_itemPathReadError) {}
+    return result;
+}
+
+function aeImportOne(importArgs) {
+    var importFile = new File(importArgs.path);
+    if (!importFile.exists) throw new Error("Import file not found: " + importArgs.path);
+    var importOptions = new ImportOptions(importFile);
+    if (importArgs.sequence !== undefined) importOptions.sequence = importArgs.sequence;
+    if (importArgs.forceAlphabetical !== undefined) importOptions.forceAlphabetical = importArgs.forceAlphabetical;
+    if (importArgs.importAs !== undefined) {
+        var importType = aeImportAsValue(importArgs.importAs);
+        if (!importOptions.canImportAs(importType)) throw new Error("File cannot be imported as " + importArgs.importAs + ": " + importArgs.path);
+        importOptions.importAs = importType;
+    }
+    if (importArgs.rangeStart !== undefined) importOptions.rangeStart = importArgs.rangeStart;
+    if (importArgs.rangeEnd !== undefined) importOptions.rangeEnd = importArgs.rangeEnd;
+    var imported = app.project.importFile(importOptions);
+    if (importArgs.name) imported.name = importArgs.name;
+    var folder = aeGetProjectFolder(importArgs);
+    if (folder) imported.parentFolder = folder;
+    try {
+        if (importArgs.conformFrameRate !== undefined) imported.mainSource.conformFrameRate = importArgs.conformFrameRate;
+        if (importArgs.loop !== undefined) imported.mainSource.loop = importArgs.loop;
+        if (importArgs.alphaMode !== undefined) imported.mainSource.alphaMode = aeAlphaModeValue(importArgs.alphaMode);
+        if (importArgs.invertAlpha !== undefined) imported.mainSource.invertAlpha = importArgs.invertAlpha;
+        if (importArgs.premulColor !== undefined) imported.mainSource.premulColor = importArgs.premulColor;
+    } catch (_interpretationError) {}
+    return aeProjectItemSummary(imported);
+}
+
+function aeRQStatusName(status) {
+    if (status === RQItemStatus.WILL_CONTINUE) return "willContinue";
+    if (status === RQItemStatus.NEEDS_OUTPUT) return "needsOutput";
+    if (status === RQItemStatus.UNQUEUED) return "unqueued";
+    if (status === RQItemStatus.QUEUED) return "queued";
+    if (status === RQItemStatus.RENDERING) return "rendering";
+    if (status === RQItemStatus.USER_STOPPED) return "userStopped";
+    if (status === RQItemStatus.ERR_STOPPED) return "errorStopped";
+    if (status === RQItemStatus.DONE) return "done";
+    return String(status);
+}
+
+function aeLogTypeValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = aeNormalizedEnumName(value);
+    var values = {
+        errorsonly: LogType.ERRORS_ONLY,
+        errorsandsettings: LogType.ERRORS_AND_SETTINGS,
+        errorsandperframeinfo: LogType.ERRORS_AND_PER_FRAME_INFO
+    };
+    if (values[normalized] === undefined) throw new Error("Unsupported render log type: " + value);
+    return values[normalized];
+}
+
+function aeLogTypeName(value) {
+    if (value === LogType.ERRORS_AND_SETTINGS) return "errorsAndSettings";
+    if (value === LogType.ERRORS_AND_PER_FRAME_INFO) return "errorsAndPerFrameInfo";
+    return "errorsOnly";
+}
+
+function aePostRenderActionValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = aeNormalizedEnumName(value);
+    var values = {
+        none: PostRenderAction.NONE,
+        "import": PostRenderAction.IMPORT,
+        importandreplaceusage: PostRenderAction.IMPORT_AND_REPLACE_USAGE,
+        setproxy: PostRenderAction.SET_PROXY
+    };
+    if (values[normalized] === undefined) throw new Error("Unsupported post-render action: " + value);
+    return values[normalized];
+}
+
+function aePostRenderActionName(value) {
+    if (value === PostRenderAction.IMPORT) return "import";
+    if (value === PostRenderAction.IMPORT_AND_REPLACE_USAGE) return "importAndReplaceUsage";
+    if (value === PostRenderAction.SET_PROXY) return "setProxy";
+    return "none";
+}
+
+function aeSettingsFormat(value, settable) {
+    var normalized = aeNormalizedEnumName(value || "string");
+    if (normalized === "number") return settable ? GetSettingsFormat.NUMBER_SETTABLE : GetSettingsFormat.NUMBER;
+    return settable ? GetSettingsFormat.STRING_SETTABLE : GetSettingsFormat.STRING;
+}
+
+function aeGetRenderQueueItem(args) {
+    var index = args.renderQueueIndex !== undefined ? args.renderQueueIndex :
+        (args.itemIndex !== undefined ? args.itemIndex :
+        (args.index !== undefined ? args.index : 1));
+    if (index < 1 || index > app.project.renderQueue.numItems) throw new Error("Render queue index out of bounds: " + index);
+    return { item: app.project.renderQueue.item(index), index: index };
+}
+
+function aeOutputModuleSummary(renderItem, outputIndex, args) {
+    var output = renderItem.outputModule(outputIndex);
+    var result = {
+        index: outputIndex,
+        name: output.name,
+        path: output.file ? output.file.fsName : "",
+        includeSourceXMP: output.includeSourceXMP,
+        postRenderAction: aePostRenderActionName(output.postRenderAction)
+    };
+    if (args && args.includeTemplates) result.templates = output.templates;
+    if (args && args.includeSettings) result.settings = output.getSettings(aeSettingsFormat(args.settingsFormat, args.settableOnly));
+    return result;
+}
+
+function aeRenderItemSummary(renderItem, index, args) {
+    var result = {
+        index: index,
+        composition: { id: renderItem.comp.id, name: renderItem.comp.name },
+        status: aeRQStatusName(renderItem.status),
+        render: renderItem.render,
+        timeSpanStart: renderItem.timeSpanStart,
+        timeSpanDuration: renderItem.timeSpanDuration,
+        skipFrames: renderItem.skipFrames,
+        logType: aeLogTypeName(renderItem.logType),
+        numOutputModules: renderItem.numOutputModules,
+        outputs: []
+    };
+    try { result.queueItemNotify = renderItem.queueItemNotify; } catch (_queueItemNotifyReadError) {}
+    try { result.elapsedSeconds = renderItem.elapsedSeconds; } catch (_elapsedReadError) {}
+    try { if (renderItem.startTime) result.startTime = renderItem.startTime.toString(); } catch (_startTimeReadError) {}
+    if (args && args.includeTemplates) result.renderSettingsTemplates = renderItem.templates;
+    if (args && args.includeSettings) result.renderSettings = renderItem.getSettings(aeSettingsFormat(args.settingsFormat, args.settableOnly));
+    for (var i = 1; i <= renderItem.numOutputModules; i++) result.outputs.push(aeOutputModuleSummary(renderItem, i, args));
+    return result;
+}
+
+function aeConfigureRenderItem(renderItem, args) {
+    var changed = [];
+    if (args.renderSettingsTemplate || args.template) {
+        renderItem.applyTemplate(args.renderSettingsTemplate || args.template);
+        changed.push("renderSettingsTemplate");
+    }
+    if (args.renderSettings) {
+        renderItem.setSettings(args.renderSettings);
+        changed.push("renderSettings");
+    }
+    if (args.timeSpanStart !== undefined) { renderItem.timeSpanStart = args.timeSpanStart; changed.push("timeSpanStart"); }
+    if (args.timeSpanDuration !== undefined) { renderItem.timeSpanDuration = args.timeSpanDuration; changed.push("timeSpanDuration"); }
+    if (args.skipFrames !== undefined) { renderItem.skipFrames = args.skipFrames; changed.push("skipFrames"); }
+    if (args.render !== undefined) { renderItem.render = args.render; changed.push("render"); }
+    if (args.logType !== undefined) { renderItem.logType = aeLogTypeValue(args.logType); changed.push("logType"); }
+    try {
+        if (args.queueItemNotify !== undefined) { renderItem.queueItemNotify = args.queueItemNotify; changed.push("queueItemNotify"); }
+    } catch (_queueItemNotifyWriteError) {}
+    return changed;
+}
+
+function aeConfigureOutputModule(renderItem, outputIndex, args) {
+    var output = renderItem.outputModule(outputIndex);
+    var changed = [];
+    if (args.outputTemplate || args.template) {
+        output.applyTemplate(args.outputTemplate || args.template);
+        changed.push("outputTemplate");
+        output = renderItem.outputModule(outputIndex);
+    }
+    if (args.copyFromOutputIndex !== undefined) {
+        var copiedSettings = renderItem.outputModule(args.copyFromOutputIndex).getSettings(GetSettingsFormat.STRING_SETTABLE);
+        output.setSettings(copiedSettings);
+        changed.push("copiedSettings");
+        output = renderItem.outputModule(outputIndex);
+    }
+    if (args.outputSettings || args.settings) {
+        output.setSettings(args.outputSettings || args.settings);
+        changed.push("outputSettings");
+        output = renderItem.outputModule(outputIndex);
+    }
+    if (args.outputPath || args.path) {
+        output.file = new File(args.outputPath || args.path);
+        changed.push("outputPath");
+    }
+    if (args.includeSourceXMP !== undefined) { output.includeSourceXMP = args.includeSourceXMP; changed.push("includeSourceXMP"); }
+    if (args.postRenderAction !== undefined) { output.postRenderAction = aePostRenderActionValue(args.postRenderAction); changed.push("postRenderAction"); }
+    return { output: aeOutputModuleSummary(renderItem, outputIndex, args), changedProperties: changed };
+}
+
+function aeRenderQueueSummary(args) {
+    var queue = app.project.renderQueue;
+    var result = {
+        rendering: queue.rendering,
+        canQueueInAME: queue.canQueueInAME,
+        numItems: queue.numItems,
+        items: []
+    };
+    try { result.queueNotify = queue.queueNotify; } catch (_queueNotifyReadError) {}
+    for (var i = 1; i <= queue.numItems; i++) result.items.push(aeRenderItemSummary(queue.item(i), i, args));
+    return result;
+}
+
+function aeRenderCommand(args) {
+    var queue = app.project.renderQueue;
+    if (args.action === "get") return aeRenderQueueSummary(args);
+    if (args.action === "add") {
+        var comp = aeGetComposition(args);
+        var renderItem = queue.items.add(comp);
+        var renderChanges = aeConfigureRenderItem(renderItem, args);
+        var outputs = args.outputs;
+        var outputResults = [];
+        if (outputs && outputs.length) {
+            for (var o = 0; o < outputs.length; o++) {
+                if (o > 0) renderItem.outputModules.add();
+                outputResults.push(aeConfigureOutputModule(renderItem, o + 1, outputs[o]));
+            }
+        } else {
+            outputResults.push(aeConfigureOutputModule(renderItem, 1, {
+                outputTemplate: args.outputTemplate,
+                outputSettings: args.outputSettings,
+                outputPath: args.outputPath,
+                includeSourceXMP: args.includeSourceXMP,
+                postRenderAction: args.postRenderAction
+            }));
+        }
+        return {
+            item: aeRenderItemSummary(renderItem, queue.numItems, args),
+            changedProperties: renderChanges,
+            outputs: outputResults
+        };
+    }
+    if (args.action === "templates") {
+        var temporary = false;
+        var templateItem = null;
+        if (queue.numItems > 0) templateItem = aeGetRenderQueueItem(args).item;
+        else {
+            templateItem = queue.items.add(aeGetComposition(args));
+            temporary = true;
+        }
+        var templates = {
+            renderSettings: templateItem.templates,
+            outputModules: templateItem.outputModule(1).templates
+        };
+        if (temporary) templateItem.remove();
+        return templates;
+    }
+    if (args.action === "queueInAME") {
+        if (!queue.canQueueInAME) throw new Error("No queued render items are available for Adobe Media Encoder.");
+        queue.queueInAME(args.renderImmediately === true);
+        return { queuedInAME: true, renderImmediately: args.renderImmediately === true };
+    }
+    if (args.action === "show") {
+        queue.showWindow(args.visible !== false);
+        return { visible: args.visible !== false };
+    }
+    if (args.action === "render") {
+        if (args.onlyIndices) {
+            for (var q = 1; q <= queue.numItems; q++) {
+                var shouldRender = false;
+                for (var selected = 0; selected < args.onlyIndices.length; selected++) {
+                    if (args.onlyIndices[selected] === q) { shouldRender = true; break; }
+                }
+                queue.item(q).render = shouldRender;
+            }
+        }
+        queue.render();
+        return aeRenderQueueSummary(args);
+    }
+
+    var itemResult = aeGetRenderQueueItem(args);
+    var item = itemResult.item;
+    var itemIndex = itemResult.index;
+    if (args.action === "update") {
+        var changes = aeConfigureRenderItem(item, args);
+        return { item: aeRenderItemSummary(item, itemIndex, args), changedProperties: changes };
+    }
+    if (args.action === "duplicate") {
+        var duplicate = item.duplicate();
+        return { item: aeRenderItemSummary(duplicate, queue.numItems, args) };
+    }
+    if (args.action === "remove") {
+        var removedComp = item.comp.name;
+        item.remove();
+        return { removed: removedComp, removedIndex: itemIndex, remaining: queue.numItems };
+    }
+    if (args.action === "addOutput") {
+        item.outputModules.add();
+        var addedIndex = item.numOutputModules;
+        return aeConfigureOutputModule(item, addedIndex, args);
+    }
+    if (args.action === "getOutput") {
+        return aeOutputModuleSummary(item, args.outputModuleIndex || 1, args);
+    }
+    if (args.action === "updateOutput") {
+        return aeConfigureOutputModule(item, args.outputModuleIndex || 1, args);
+    }
+    if (args.action === "removeOutput") {
+        var outputIndex = args.outputModuleIndex || 1;
+        var removedOutput = item.outputModule(outputIndex).name;
+        item.outputModule(outputIndex).remove();
+        return { removed: removedOutput, removedIndex: outputIndex, remaining: item.numOutputModules };
+    }
+    if (args.action === "applyTemplate") {
+        var kind = aeNormalizedEnumName(args.kind || "renderSettings");
+        if (kind === "output" || kind === "outputmodule") {
+            var outputModuleIndex = args.outputModuleIndex || 1;
+            item.outputModule(outputModuleIndex).applyTemplate(args.name || args.template);
+            return aeOutputModuleSummary(item, outputModuleIndex, args);
+        }
+        item.applyTemplate(args.name || args.template);
+        return aeRenderItemSummary(item, itemIndex, args);
+    }
+    if (args.action === "saveTemplate") {
+        var templateName = args.name;
+        if (!templateName) throw new Error("Template name is required.");
+        var templateKind = aeNormalizedEnumName(args.kind || "renderSettings");
+        if (templateKind === "output" || templateKind === "outputmodule") {
+            var templateOutputIndex = args.outputModuleIndex || 1;
+            aeConfigureOutputModule(item, templateOutputIndex, args);
+            var templateOutput = item.outputModule(templateOutputIndex);
+            templateOutput.saveAsTemplate(templateName);
+            return { saved: templateName, kind: "outputModule", templates: templateOutput.templates };
+        }
+        aeConfigureRenderItem(item, args);
+        item.saveAsTemplate(templateName);
+        return { saved: templateName, kind: "renderSettings", templates: item.templates };
+    }
+    throw new Error("Unsupported render action: " + args.action);
+}
+
 function aeProjectCommand(args) {
     if (args.action === "get") return aeInspect({ scope: "project", maxItems: args.maxItems });
     if (args.action === "import") {
-        var importFile = new File(args.path);
-        if (!importFile.exists) throw new Error("Import file not found: " + args.path);
-        var importOptions = new ImportOptions(importFile);
-        if (args.sequence !== undefined) importOptions.sequence = args.sequence;
-        var imported = app.project.importFile(importOptions);
-        return { index: imported.index, id: imported.id, name: imported.name };
+        var importSpecs = [];
+        if (args.items) importSpecs = args.items;
+        else if (args.paths) {
+            for (var p = 0; p < args.paths.length; p++) {
+                importSpecs.push(typeof args.paths[p] === "string" ? { path: args.paths[p] } : args.paths[p]);
+            }
+        } else importSpecs = [{ path: args.path }];
+        var importedItems = [];
+        for (var i = 0; i < importSpecs.length; i++) importedItems.push(aeImportOne(aeMergeObjects(args, importSpecs[i])));
+        return { count: importedItems.length, items: importedItems };
     }
     if (args.action === "createFolder") {
         var folder = app.project.items.addFolder(args.name || "Folder");
@@ -2916,11 +3308,9 @@ function aeProjectCommand(args) {
         return { path: app.project.file ? app.project.file.fsName : "" };
     }
     if (args.action === "queueRender") {
-        var comp = aeGetComposition(args);
-        var renderItem = app.project.renderQueue.items.add(comp);
-        if (args.outputPath) renderItem.outputModule(1).file = new File(args.outputPath);
+        var queued = aeRenderCommand(aeMergeObjects(args, { action: "add" }));
         if (args.renderNow) app.project.renderQueue.render();
-        return { renderQueueIndex: renderItem.index, comp: comp.name, outputPath: renderItem.outputModule(1).file ? renderItem.outputModule(1).file.fsName : "" };
+        return queued;
     }
     throw new Error("Unsupported project action: " + args.action);
 }
@@ -2959,6 +3349,7 @@ function aeCommand(args) {
         else if (args.operation === "layer") data = aeLayerCommand(args);
         else if (args.operation === "composition") data = aeCompositionCommand(args);
         else if (args.operation === "project") data = aeProjectCommand(args);
+        else if (args.operation === "render") data = aeRenderCommand(args);
         else if (args.operation === "frame") data = aeFrameCommand(args);
         else throw new Error("Unsupported operation: " + args.operation);
         return JSON.stringify({ status: "success", operation: args.operation, action: args.action, data: data });

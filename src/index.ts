@@ -968,7 +968,7 @@ To apply the "cinematic-look" template:
 
 server.tool(
   "after-effects",
-  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, projects, or frame capture.",
+  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, projects, imports, rendering, or frame capture.",
   {
     operation: z.enum([
       "inspect",
@@ -981,6 +981,7 @@ server.tool(
       "layer",
       "composition",
       "project",
+      "render",
       "frame"
     ]).describe("Capability area to use."),
     action: z.string().describe("Action within the selected operation, such as get, set, add, update, remove, clear, import, or capture."),
@@ -992,7 +993,10 @@ server.tool(
     try {
       clearResultsFile();
       writeCommandFile("aeCommand", { operation, action, ...parameters });
-      const result = await waitForBridgeResult("aeCommand", 15000, 250);
+      const timeoutMs = operation === "render" && action === "render"
+        ? Number(parameters.timeoutMs || 3600000)
+        : 15000;
+      const result = await waitForBridgeResult("aeCommand", timeoutMs, 250);
       const content: any[] = [{ type: "text", text: result }];
 
       if (operation === "frame" && action === "capture") {

@@ -11,6 +11,7 @@ Extended capabilities include:
 - Shape groups, primitives, paths, fills, strokes, and vector modifiers
 - Point and box text with character, paragraph, range styling, and Source Text animation
 - Track mattes, blending modes, precomposing, and explicit time-remap animation
+- Batch imports, render-queue management, multiple outputs, AME dispatch, and reusable render/output templates
 - Keyframe creation, editing, removal, interpolation, and easing controls
 - Layer creation, parenting, duplication, ordering, and switch management
 - Project import, saving, render-queue operations, and PNG frame capture
