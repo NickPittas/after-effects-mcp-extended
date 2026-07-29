@@ -1919,6 +1919,132 @@ function aeSetEffectSettings(effect, settings) {
     return changed;
 }
 
+function aeNormalizedEnumName(value) {
+    return String(value || "").toLowerCase().replace(/[\s_\-]/g, "");
+}
+
+function aeBlendingModes() {
+    return {
+        normal: BlendingMode.NORMAL,
+        dissolve: BlendingMode.DISSOLVE,
+        dancingdissolve: BlendingMode.DANCING_DISSOLVE,
+        darken: BlendingMode.DARKEN,
+        multiply: BlendingMode.MULTIPLY,
+        colorburn: BlendingMode.COLOR_BURN,
+        classiccolorburn: BlendingMode.CLASSIC_COLOR_BURN,
+        linearburn: BlendingMode.LINEAR_BURN,
+        darkercolor: BlendingMode.DARKER_COLOR,
+        add: BlendingMode.ADD,
+        lighten: BlendingMode.LIGHTEN,
+        screen: BlendingMode.SCREEN,
+        colordodge: BlendingMode.COLOR_DODGE,
+        classiccolordodge: BlendingMode.CLASSIC_COLOR_DODGE,
+        lineardodge: BlendingMode.LINEAR_DODGE,
+        lightercolor: BlendingMode.LIGHTER_COLOR,
+        overlay: BlendingMode.OVERLAY,
+        softlight: BlendingMode.SOFT_LIGHT,
+        hardlight: BlendingMode.HARD_LIGHT,
+        linearlight: BlendingMode.LINEAR_LIGHT,
+        vividlight: BlendingMode.VIVID_LIGHT,
+        pinlight: BlendingMode.PIN_LIGHT,
+        hardmix: BlendingMode.HARD_MIX,
+        difference: BlendingMode.DIFFERENCE,
+        classicdifference: BlendingMode.CLASSIC_DIFFERENCE,
+        exclusion: BlendingMode.EXCLUSION,
+        subtract: BlendingMode.SUBTRACT,
+        divide: BlendingMode.DIVIDE,
+        hue: BlendingMode.HUE,
+        saturation: BlendingMode.SATURATION,
+        color: BlendingMode.COLOR,
+        luminosity: BlendingMode.LUMINOSITY,
+        stencilalpha: BlendingMode.STENCIL_ALPHA,
+        stencilluma: BlendingMode.STENCIL_LUMA,
+        silhouettealpha: BlendingMode.SILHOUETTE_ALPHA,
+        silhouetteluma: BlendingMode.SILHOUETTE_LUMA,
+        alphaadd: BlendingMode.ALPHA_ADD,
+        luminescentpremul: BlendingMode.LUMINESCENT_PREMUL
+    };
+}
+
+function aeBlendingModeValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = aeNormalizedEnumName(value);
+    var modes = aeBlendingModes();
+    if (modes[normalized] === undefined) throw new Error("Unsupported blending mode: " + value);
+    return modes[normalized];
+}
+
+function aeBlendingModeName(value) {
+    var modes = aeBlendingModes();
+    for (var modeName in modes) {
+        if (modes.hasOwnProperty(modeName) && modes[modeName] !== undefined && modes[modeName] === value) return modeName;
+    }
+    return String(value);
+}
+
+function aeTrackMatteTypes() {
+    return {
+        alpha: TrackMatteType.ALPHA,
+        alphainverted: TrackMatteType.ALPHA_INVERTED,
+        luma: TrackMatteType.LUMA,
+        lumainverted: TrackMatteType.LUMA_INVERTED,
+        none: TrackMatteType.NO_TRACK_MATTE
+    };
+}
+
+function aeTrackMatteTypeValue(value) {
+    if (typeof value !== "string") return value;
+    var normalized = aeNormalizedEnumName(value);
+    var types = aeTrackMatteTypes();
+    if (types[normalized] === undefined) throw new Error("Unsupported track matte type: " + value);
+    return types[normalized];
+}
+
+function aeTrackMatteTypeName(value) {
+    var types = aeTrackMatteTypes();
+    for (var typeName in types) {
+        if (types.hasOwnProperty(typeName) && types[typeName] !== undefined && types[typeName] === value) return typeName;
+    }
+    return String(value);
+}
+
+function aeLayerSummary(layer) {
+    var result = {
+        index: layer.index,
+        name: layer.name,
+        enabled: layer.enabled,
+        locked: layer.locked,
+        shy: layer.shy,
+        solo: layer.solo,
+        threeDLayer: layer.threeDLayer,
+        inPoint: layer.inPoint,
+        outPoint: layer.outPoint,
+        startTime: layer.startTime,
+        stretch: layer.stretch
+    };
+    try { result.blendingMode = aeBlendingModeName(layer.blendingMode); } catch (_blendReadError) {}
+    try { result.audioEnabled = layer.audioEnabled; } catch (_audioReadError) {}
+    try { result.timeRemapEnabled = layer.timeRemapEnabled; } catch (_timeRemapReadError) {}
+    try { result.hasTrackMatte = layer.hasTrackMatte; } catch (_hasMatteReadError) {}
+    try { result.isTrackMatte = layer.isTrackMatte; } catch (_isMatteReadError) {}
+    try { result.trackMatteType = aeTrackMatteTypeName(layer.trackMatteType); } catch (_matteTypeReadError) {}
+    try {
+        if (layer.trackMatteLayer) {
+            result.trackMatteLayer = { index: layer.trackMatteLayer.index, name: layer.trackMatteLayer.name };
+        }
+    } catch (_matteLayerReadError) {}
+    try { if (layer.parent) result.parent = { index: layer.parent.index, name: layer.parent.name }; } catch (_parentReadError) {}
+    try { if (layer.source) result.source = { id: layer.source.id, name: layer.source.name }; } catch (_sourceReadError) {}
+    return result;
+}
+
+function aeProjectItemIndex(target) {
+    for (var i = 1; i <= app.project.numItems; i++) {
+        if (app.project.item(i) === target) return i;
+    }
+    return null;
+}
+
 function aeInspect(args) {
     var scope = args.scope || "composition";
     if (scope === "project") {
@@ -1959,18 +2085,7 @@ function aeInspect(args) {
             layers: []
         };
         for (var l = 1; l <= comp.numLayers; l++) {
-            var layerItem = comp.layer(l);
-            compResult.layers.push({
-                index: layerItem.index,
-                name: layerItem.name,
-                enabled: layerItem.enabled,
-                locked: layerItem.locked,
-                shy: layerItem.shy,
-                solo: layerItem.solo,
-                threeDLayer: layerItem.threeDLayer,
-                inPoint: layerItem.inPoint,
-                outPoint: layerItem.outPoint
-            });
+            compResult.layers.push(aeLayerSummary(comp.layer(l)));
         }
         return compResult;
     }
@@ -2569,8 +2684,54 @@ function aeTextCommand(args) {
     throw new Error("Unsupported text action: " + args.action);
 }
 
+function aeSetLayerTrackMatte(comp, layer, args) {
+    var matteLayer = null;
+    if (args.matteLayerIndex !== undefined) matteLayer = comp.layer(args.matteLayerIndex);
+    else if (args.matteLayerName) matteLayer = aeGetLayer(comp, { layerName: args.matteLayerName });
+    if (!matteLayer) throw new Error("Pass matteLayerIndex or matteLayerName.");
+    if (matteLayer === layer) throw new Error("A layer cannot use itself as a track matte.");
+    var matteType = aeTrackMatteTypeValue(args.trackMatteType || args.matteType || "alpha");
+    if (matteType === TrackMatteType.NO_TRACK_MATTE) return aeRemoveLayerTrackMatte(layer);
+    if (typeof layer.setTrackMatte === "function") {
+        layer.setTrackMatte(matteLayer, matteType);
+    } else {
+        matteLayer.moveBefore(layer);
+        layer.trackMatteType = matteType;
+    }
+    return aeLayerSummary(layer);
+}
+
+function aeRemoveLayerTrackMatte(layer) {
+    if (typeof layer.removeTrackMatte === "function") layer.removeTrackMatte();
+    else layer.trackMatteType = TrackMatteType.NO_TRACK_MATTE;
+    return aeLayerSummary(layer);
+}
+
 function aeLayerCommand(args) {
     var comp = aeGetComposition(args);
+    if (args.action === "precompose") {
+        var layerIndices = args.layerIndices || (args.layerIndex !== undefined ? [args.layerIndex] : null);
+        if (!layerIndices || layerIndices.length === 0) throw new Error("Precompose requires layerIndices or layerIndex.");
+        for (var p = 0; p < layerIndices.length; p++) {
+            if (layerIndices[p] < 1 || layerIndices[p] > comp.numLayers) throw new Error("Layer index out of bounds: " + layerIndices[p]);
+        }
+        var precomp = comp.layers.precompose(
+            layerIndices,
+            args.newCompName || args.name || "Pre-comp",
+            args.moveAllAttributes !== false
+        );
+        return {
+            composition: {
+                index: aeProjectItemIndex(precomp),
+                id: precomp.id,
+                name: precomp.name,
+                duration: precomp.duration,
+                frameRate: precomp.frameRate,
+                numLayers: precomp.numLayers
+            },
+            sourceComposition: { id: comp.id, name: comp.name, numLayers: comp.numLayers }
+        };
+    }
     if (args.action === "add") {
         var created = null;
         if (args.type === "text") created = comp.layers.addText(args.text || "");
@@ -2582,13 +2743,14 @@ function aeLayerCommand(args) {
         else throw new Error("Unsupported layer type: " + args.type);
         if (args.name) created.name = args.name;
         if (args.position) created.property("ADBE Transform Group").property("ADBE Position").setValue(args.position);
-        return { index: created.index, name: created.name, type: args.type };
+        return { layer: aeLayerSummary(created), type: args.type };
     }
 
     var layer = aeGetLayer(comp, args);
+    if (args.action === "get") return aeLayerSummary(layer);
     if (args.action === "update") {
         var changed = [];
-        var switches = ["name", "enabled", "locked", "shy", "solo", "threeDLayer", "adjustmentLayer", "guideLayer", "motionBlur", "collapseTransformation", "inPoint", "outPoint", "startTime", "stretch", "label", "comment"];
+        var switches = ["name", "enabled", "locked", "shy", "solo", "threeDLayer", "adjustmentLayer", "guideLayer", "motionBlur", "collapseTransformation", "preserveTransparency", "audioEnabled", "frameBlending", "inPoint", "outPoint", "startTime", "stretch", "label", "comment"];
         for (var i = 0; i < switches.length; i++) {
             var key = switches[i];
             if (args[key] !== undefined) {
@@ -2596,16 +2758,82 @@ function aeLayerCommand(args) {
                 changed.push(key);
             }
         }
+        if (args.blendingMode !== undefined) {
+            layer.blendingMode = aeBlendingModeValue(args.blendingMode);
+            changed.push("blendingMode");
+        }
+        if (args.timeRemapEnabled !== undefined) {
+            if (args.timeRemapEnabled && layer.canSetTimeRemapEnabled === false) throw new Error("Layer cannot enable time remapping.");
+            layer.timeRemapEnabled = args.timeRemapEnabled;
+            changed.push("timeRemapEnabled");
+        }
         if (args.parentLayerIndex !== undefined) {
             layer.parent = args.parentLayerIndex === null ? null : comp.layer(args.parentLayerIndex);
             changed.push("parent");
         }
-        return { index: layer.index, name: layer.name, changedProperties: changed };
+        if (args.trackMatteLayerIndex !== undefined || args.trackMatteLayerName) {
+            aeSetLayerTrackMatte(comp, layer, {
+                matteLayerIndex: args.trackMatteLayerIndex,
+                matteLayerName: args.trackMatteLayerName,
+                trackMatteType: args.trackMatteType
+            });
+            changed.push("trackMatte");
+        } else if (args.removeTrackMatte === true) {
+            aeRemoveLayerTrackMatte(layer);
+            changed.push("trackMatte");
+        }
+        return { layer: aeLayerSummary(layer), changedProperties: changed };
+    }
+    if (args.action === "setTrackMatte") {
+        return { layer: aeSetLayerTrackMatte(comp, layer, args) };
+    }
+    if (args.action === "removeTrackMatte") {
+        return { layer: aeRemoveLayerTrackMatte(layer) };
+    }
+    if (args.action === "timeRemap") {
+        if (args.enabled === false) {
+            layer.timeRemapEnabled = false;
+            return { layer: aeLayerSummary(layer), keyframes: [] };
+        }
+        if (layer.canSetTimeRemapEnabled === false) throw new Error("Layer cannot enable time remapping.");
+        if (!layer.timeRemapEnabled) layer.timeRemapEnabled = true;
+        var timeRemap = layer.property("ADBE Time Remapping");
+        if (!timeRemap) throw new Error("Time Remap property is unavailable.");
+        if (args.keyframes) {
+            for (var k = 0; k < args.keyframes.length; k++) {
+                var keyframe = args.keyframes[k];
+                timeRemap.setValueAtTime(keyframe.time, keyframe.value);
+            }
+            if (args.clearExisting !== false) {
+                for (var existingIndex = timeRemap.numKeys; existingIndex >= 1; existingIndex--) {
+                    var existingTime = timeRemap.keyTime(existingIndex);
+                    var keepExisting = false;
+                    for (var requestedIndex = 0; requestedIndex < args.keyframes.length; requestedIndex++) {
+                        if (Math.abs(args.keyframes[requestedIndex].time - existingTime) < 0.000001) {
+                            keepExisting = true;
+                            break;
+                        }
+                    }
+                    if (!keepExisting) timeRemap.removeKey(existingIndex);
+                }
+            }
+            for (var optionIndex = 0; optionIndex < args.keyframes.length; optionIndex++) {
+                var optionKeyframe = args.keyframes[optionIndex];
+                var keyIndex = timeRemap.nearestKeyIndex(optionKeyframe.time);
+                aeApplyKeyframeOptions(timeRemap, keyIndex, optionKeyframe);
+            }
+        }
+        if (args.expression !== undefined) timeRemap.expression = args.expression || "";
+        return {
+            layer: aeLayerSummary(layer),
+            property: aeSerializeProperty(timeRemap, 0, 0, true),
+            keyframes: aeSerializeKeyframes(timeRemap)
+        };
     }
     if (args.action === "duplicate") {
         var duplicate = layer.duplicate();
         if (args.newName) duplicate.name = args.newName;
-        return { index: duplicate.index, name: duplicate.name };
+        return { layer: aeLayerSummary(duplicate) };
     }
     if (args.action === "remove") {
         var layerName = layer.name;
@@ -2618,7 +2846,7 @@ function aeLayerCommand(args) {
         else if (args.where === "before") layer.moveBefore(comp.layer(args.referenceLayerIndex));
         else if (args.where === "after") layer.moveAfter(comp.layer(args.referenceLayerIndex));
         else throw new Error("Unsupported move target.");
-        return { index: layer.index, name: layer.name };
+        return { layer: aeLayerSummary(layer) };
     }
     throw new Error("Unsupported layer action: " + args.action);
 }

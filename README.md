@@ -10,6 +10,7 @@ Extended capabilities include:
 - Mask inspection, creation, editing, removal, and path animation
 - Shape groups, primitives, paths, fills, strokes, and vector modifiers
 - Point and box text with character, paragraph, range styling, and Source Text animation
+- Track mattes, blending modes, precomposing, and explicit time-remap animation
 - Keyframe creation, editing, removal, interpolation, and easing controls
 - Layer creation, parenting, duplication, ordering, and switch management
 - Project import, saving, render-queue operations, and PNG frame capture
