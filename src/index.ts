@@ -984,7 +984,7 @@ server.tool(
       "render",
       "frame"
     ]).describe("Capability area to use."),
-    action: z.string().describe("Action within the selected operation, such as get, set, add, update, remove, import, media, relink, reload, interpret, proxy, dependencies, manifest, cleanup, render, or capture."),
+    action: z.string().describe("Action within the selected operation, such as get, set, add, update, remove, import, media, relink, reload, interpret, proxy, dependencies, manifest, cleanup, render, or capture. Layer add supports generated layers and existing project items or footage."),
     parameters: z.record(z.string(), z.unknown()).optional().describe(
       "Operation-specific parameters. Project items can be selected by itemIndex, itemId, or itemName; property paths are arrays of names, match names, or 1-based indexes."
     )

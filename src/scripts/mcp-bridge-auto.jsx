@@ -2740,6 +2740,16 @@ function aeLayerCommand(args) {
         else if (args.type === "shape") created = comp.layers.addShape();
         else if (args.type === "camera") created = comp.layers.addCamera(args.name || "Camera", args.centerPoint || [comp.width / 2, comp.height / 2]);
         else if (args.type === "light") created = comp.layers.addLight(args.name || "Light", args.centerPoint || [comp.width / 2, comp.height / 2]);
+        else if (args.type === "item" || args.type === "projectItem" || args.type === "footage") {
+            var sourceResult = aeGetProjectItem({
+                itemIndex: args.itemIndex,
+                itemId: args.itemId,
+                itemName: args.itemName,
+                active: false
+            });
+            if (!aeIsAVItem(sourceResult.item)) throw new Error("Only footage or compositions can be added as layers.");
+            created = args.duration !== undefined ? comp.layers.add(sourceResult.item, args.duration) : comp.layers.add(sourceResult.item);
+        }
         else throw new Error("Unsupported layer type: " + args.type);
         if (args.name) created.name = args.name;
         if (args.position) created.property("ADBE Transform Group").property("ADBE Position").setValue(args.position);

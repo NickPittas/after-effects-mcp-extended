@@ -64,6 +64,7 @@ Extended capabilities include:
 - **Create shape layers** (rectangle, ellipse, polygon, star) with colors and strokes
 - **Create solid/adjustment layers** for backgrounds and effects
 - **Create camera layers** with configurable zoom and position
+- **Place existing footage or compositions** into a composition by project item index, ID, or name
 - **Create null objects** for animation control
 - **Modify layer properties** like position, scale, rotation, opacity, timing
 - **Toggle 2D/3D mode** for layers
