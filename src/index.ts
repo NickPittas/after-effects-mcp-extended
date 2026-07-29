@@ -88,7 +88,11 @@ async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number =
           lastSize = content.length;
           try {
             const parsed = JSON.parse(content);
-            if (!expectedCommand || parsed._commandExecuted === expectedCommand) {
+            if (
+              !expectedCommand ||
+              parsed._commandExecuted === expectedCommand ||
+              (parsed.status && parsed.status !== "waiting")
+            ) {
               return content;
             }
           } catch {
@@ -191,6 +195,8 @@ server.tool(
       "duplicateLayer",
       "deleteLayer",
       "setLayerMask"
+      ,"createTextAnimator",
+      "aeCommand"
     ];
     
     if (!allowedScripts.includes(script)) {
@@ -230,6 +236,57 @@ server.tool(
             text: `Error queuing command: ${String(error)}`
           }
         ],
+        isError: true
+      };
+    }
+  }
+);
+
+server.tool(
+  "create-text-animator",
+  "Create an After Effects Text Animator with one or more animator properties and an animated range selector.",
+  {
+    compIndex: z.number().int().positive().describe("1-based index of the target composition in the project panel."),
+    layerIndex: z.number().int().positive().describe("1-based index of the target layer within the composition."),
+    animatorName: z.string().optional().describe("Optional name for the text animator."),
+    properties: z.array(z.object({
+      property: z.enum([
+        "anchorPoint", "position", "scale", "rotation", "opacity", "skew", "skewAxis",
+        "tracking", "fillColor", "fillHue", "fillSaturation", "fillBrightness", "fillOpacity",
+        "strokeColor", "strokeHue", "strokeSaturation", "strokeBrightness", "strokeOpacity",
+        "strokeWidth", "blur", "characterOffset", "characterValue", "raw"
+      ]).describe("Friendly animator property name, or 'raw' with matchName."),
+      value: z.unknown().describe("Static animator-property value."),
+      matchName: z.string().optional().describe("After Effects match name; required when property is 'raw'.")
+    })).min(1),
+    selector: z.object({
+      basedOn: z.enum(["characters", "charactersExcludingSpaces", "words", "lines"]).optional(),
+      mode: z.enum(["start", "end", "offset"]).default("start"),
+      from: z.number().default(0),
+      to: z.number().default(100),
+      start: z.number().default(0),
+      end: z.number().default(100),
+      offset: z.number().default(0),
+      startTimeInSeconds: z.number().nonnegative().default(0),
+      durationInFrames: z.number().int().positive(),
+      smoothness: z.number().min(0).max(100).default(0),
+      easeHigh: z.number().min(-100).max(100).optional(),
+      easeLow: z.number().min(-100).max(100).optional(),
+      randomizeOrder: z.boolean().optional()
+    })
+  },
+  async (parameters) => {
+    try {
+      writeCommandFile("createTextAnimator", parameters);
+      return {
+        content: [{
+          type: "text",
+          text: `Command to create a text animator on layer ${parameters.layerIndex} in comp ${parameters.compIndex} has been queued.\nUse the "get-results" tool after a few seconds to check for confirmation.`
+        }]
+      };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `Error queuing create-text-animator command: ${String(error)}` }],
         isError: true
       };
     }
@@ -906,6 +963,58 @@ To apply the "cinematic-look" template:
         }
       ]
     };
+  }
+);
+
+server.tool(
+  "after-effects",
+  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, layers, compositions, projects, or frame capture.",
+  {
+    operation: z.enum([
+      "inspect",
+      "property",
+      "keyframe",
+      "effect",
+      "layer",
+      "composition",
+      "project",
+      "frame"
+    ]).describe("Capability area to use."),
+    action: z.string().describe("Action within the selected operation, such as get, set, add, update, remove, clear, import, or capture."),
+    parameters: z.record(z.string(), z.unknown()).optional().describe(
+      "Operation-specific parameters. Property paths are arrays of names, match names, or 1-based indexes."
+    )
+  },
+  async ({ operation, action, parameters = {} }) => {
+    try {
+      clearResultsFile();
+      writeCommandFile("aeCommand", { operation, action, ...parameters });
+      const result = await waitForBridgeResult("aeCommand", 15000, 250);
+      const content: any[] = [{ type: "text", text: result }];
+
+      if (operation === "frame" && action === "capture") {
+        try {
+          const parsed = JSON.parse(result);
+          const imagePath = parsed?.data?.path ?? parsed?.path;
+          if (parsed.status === "success" && imagePath && fs.existsSync(imagePath)) {
+            content.push({
+              type: "image",
+              data: fs.readFileSync(imagePath).toString("base64"),
+              mimeType: "image/png"
+            });
+          }
+        } catch {
+          // Keep the structured text result if image loading fails.
+        }
+      }
+
+      return { content };
+    } catch (error) {
+      return {
+        content: [{ type: "text", text: `After Effects command failed: ${String(error)}` }],
+        isError: true
+      };
+    }
   }
 );
 

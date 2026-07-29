@@ -1,4 +1,17 @@
-# 🎬 After Effects MCP Server
+# 🎬 After Effects MCP Extended
+
+This project is a fork of [Dakkshin/after-effects-mcp](https://github.com/Dakkshin/after-effects-mcp), focused on broader production control through a compact MCP surface.
+
+Extended capabilities include:
+
+- A unified `after-effects` tool for inspection, properties, keyframes, effects, layers, compositions, projects, and frame capture
+- Recursive property-tree and keyframe inspection
+- General effect lifecycle management
+- Keyframe creation, editing, removal, interpolation, and easing controls
+- Layer creation, parenting, duplication, ordering, and switch management
+- Project import, saving, render-queue operations, and PNG frame capture
+- Text animators with character, word, and line range selectors
+- Improved bridge response tracking and direct rendered-frame image returns
 
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
 ![Build](https://img.shields.io/badge/build-passing-success)

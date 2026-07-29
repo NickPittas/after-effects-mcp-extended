@@ -1494,6 +1494,655 @@ function getLayerInfo() {
     return JSON.stringify(result, null, 2);
 }
 
+function createTextAnimator(args) {
+    app.beginUndoGroup("Create Text Animator");
+    try {
+        var comp = app.project.items[args.compIndex];
+        if (!comp || !(comp instanceof CompItem)) {
+            throw new Error("Composition not found at index " + args.compIndex);
+        }
+
+        var layer = comp.layers[args.layerIndex];
+        if (!layer) {
+            throw new Error("Layer not found at index " + args.layerIndex);
+        }
+
+        var textProperties = layer.property("ADBE Text Properties");
+        if (!textProperties) {
+            throw new Error("Target layer is not a text layer.");
+        }
+
+        var animators = textProperties.property("ADBE Text Animators");
+        var animator = animators.addProperty("ADBE Text Animator");
+        animator.name = args.animatorName || "Text Animator";
+
+        var animatorProperties = animator.property("ADBE Text Animator Properties");
+        var propertyMatchNames = {
+            anchorPoint: "ADBE Text Anchor Point 3D",
+            position: "ADBE Text Position 3D",
+            scale: "ADBE Text Scale 3D",
+            rotation: "ADBE Text Rotation",
+            opacity: "ADBE Text Opacity",
+            skew: "ADBE Text Skew",
+            skewAxis: "ADBE Text Skew Axis",
+            tracking: "ADBE Text Tracking Amount",
+            fillColor: "ADBE Text Fill Color",
+            fillHue: "ADBE Text Fill Hue",
+            fillSaturation: "ADBE Text Fill Saturation",
+            fillBrightness: "ADBE Text Fill Brightness",
+            fillOpacity: "ADBE Text Fill Opacity",
+            strokeColor: "ADBE Text Stroke Color",
+            strokeHue: "ADBE Text Stroke Hue",
+            strokeSaturation: "ADBE Text Stroke Saturation",
+            strokeBrightness: "ADBE Text Stroke Brightness",
+            strokeOpacity: "ADBE Text Stroke Opacity",
+            strokeWidth: "ADBE Text Stroke Width",
+            blur: "ADBE Text Blur",
+            characterOffset: "ADBE Text Character Offset",
+            characterValue: "ADBE Text Character Value"
+        };
+        var addedProperties = [];
+        for (var p = 0; p < args.properties.length; p++) {
+            var definition = args.properties[p];
+            var matchName = definition.property === "raw" ? definition.matchName : propertyMatchNames[definition.property];
+            if (!matchName) throw new Error("Unsupported animator property: " + definition.property);
+            var animatorProperty = animatorProperties.addProperty(matchName);
+            if (!animatorProperty) throw new Error("After Effects could not add animator property " + matchName);
+            animatorProperty.setValue(definition.value);
+            addedProperties.push({ property: definition.property, matchName: matchName });
+        }
+
+        var selectors = animator.property("ADBE Text Selectors");
+        var selector = selectors.addProperty("ADBE Text Selector");
+        selector.name = "Range Selector";
+
+        var start = selector.property("ADBE Text Percent Start");
+        var end = selector.property("ADBE Text Percent End");
+        var offset = selector.property("ADBE Text Percent Offset");
+        var selectorArgs = args.selector || {};
+        start.setValue(selectorArgs.start !== undefined ? selectorArgs.start : 0);
+        end.setValue(selectorArgs.end !== undefined ? selectorArgs.end : 100);
+        offset.setValue(selectorArgs.offset !== undefined ? selectorArgs.offset : 0);
+
+        var advanced = selector.property("ADBE Text Range Advanced");
+        if (advanced) {
+            var basedOn = advanced.property("ADBE Text Range Type2");
+            if (!basedOn) basedOn = advanced.property("ADBE Text Range Type 2");
+            var basedOnValues = {
+                characters: 1,
+                charactersExcludingSpaces: 2,
+                words: 3,
+                lines: 4
+            };
+            if (basedOn) basedOn.setValue(basedOnValues[selectorArgs.basedOn || "characters"]);
+
+            var smoothness = advanced.property("ADBE Text Selector Smoothness");
+            if (smoothness) smoothness.setValue(selectorArgs.smoothness !== undefined ? selectorArgs.smoothness : 0);
+            var easeHigh = advanced.property("ADBE Text Levels Max Ease");
+            if (easeHigh && selectorArgs.easeHigh !== undefined) easeHigh.setValue(selectorArgs.easeHigh);
+            var easeLow = advanced.property("ADBE Text Levels Min Ease");
+            if (easeLow && selectorArgs.easeLow !== undefined) easeLow.setValue(selectorArgs.easeLow);
+            var randomize = advanced.property("ADBE Text Randomize Order");
+            if (randomize && selectorArgs.randomizeOrder !== undefined) randomize.setValue(selectorArgs.randomizeOrder ? 1 : 0);
+        }
+
+        var animatedSelectorProperty = start;
+        if (selectorArgs.mode === "end") animatedSelectorProperty = end;
+        if (selectorArgs.mode === "offset") animatedSelectorProperty = offset;
+        var startTime = (selectorArgs.startTimeInSeconds !== undefined) ? selectorArgs.startTimeInSeconds : 0;
+        var durationFrames = selectorArgs.durationInFrames || 25;
+        var endTime = startTime + (durationFrames / comp.frameRate);
+        animatedSelectorProperty.setValueAtTime(startTime, selectorArgs.from !== undefined ? selectorArgs.from : 0);
+        animatedSelectorProperty.setValueAtTime(endTime, selectorArgs.to !== undefined ? selectorArgs.to : 100);
+
+        return JSON.stringify({
+            status: "success",
+            message: "Text animator created successfully",
+            layer: layer.name,
+            animator: animator.name,
+            properties: addedProperties,
+            selectorMode: selectorArgs.mode || "start",
+            startTime: startTime,
+            endTime: endTime,
+            durationFrames: durationFrames,
+            frameRate: comp.frameRate
+        });
+    } catch (e) {
+        return JSON.stringify({ status: "error", message: e.toString() });
+    } finally {
+        app.endUndoGroup();
+    }
+}
+
+// --- General After Effects command surface ---
+function aeGetComposition(args) {
+    var comp = null;
+    if (args.compIndex !== undefined && args.compIndex !== null) {
+        comp = app.project.item(args.compIndex);
+    } else if (args.compName) {
+        for (var i = 1; i <= app.project.numItems; i++) {
+            var item = app.project.item(i);
+            if (item instanceof CompItem && item.name === args.compName) {
+                comp = item;
+                break;
+            }
+        }
+    } else if (app.project.activeItem instanceof CompItem) {
+        comp = app.project.activeItem;
+    }
+    if (!comp || !(comp instanceof CompItem)) throw new Error("Composition not found.");
+    return comp;
+}
+
+function aeGetLayer(comp, args) {
+    var layer = null;
+    if (args.layerIndex !== undefined && args.layerIndex !== null) {
+        layer = comp.layer(args.layerIndex);
+    } else if (args.layerName) {
+        for (var i = 1; i <= comp.numLayers; i++) {
+            if (comp.layer(i).name === args.layerName) {
+                layer = comp.layer(i);
+                break;
+            }
+        }
+    }
+    if (!layer) throw new Error("Layer not found.");
+    return layer;
+}
+
+function aeResolveProperty(root, propertyPath) {
+    var path = propertyPath;
+    if (typeof path === "string") path = path.split("/");
+    if (!path || path.length === 0) return root;
+    var current = root;
+    for (var i = 0; i < path.length; i++) {
+        var segment = path[i];
+        var next = null;
+        try { next = current.property(segment); } catch (_directError) {}
+        if (!next && typeof segment === "string" && current.numProperties) {
+            for (var p = 1; p <= current.numProperties; p++) {
+                var candidate = current.property(p);
+                if (candidate.name === segment || candidate.matchName === segment) {
+                    next = candidate;
+                    break;
+                }
+            }
+        }
+        if (!next) throw new Error("Property path segment not found: " + segment);
+        current = next;
+    }
+    return current;
+}
+
+function aeSafeValue(value) {
+    if (value === null || value === undefined) return value;
+    if (value instanceof TextDocument) {
+        return {
+            text: value.text,
+            font: value.font,
+            fontSize: value.fontSize,
+            fillColor: value.fillColor,
+            strokeColor: value.strokeColor,
+            strokeWidth: value.strokeWidth,
+            applyFill: value.applyFill,
+            applyStroke: value.applyStroke,
+            justification: value.justification
+        };
+    }
+    try {
+        JSON.stringify(value);
+        return value;
+    } catch (_valueError) {
+        return value.toString();
+    }
+}
+
+function aeInterpolationName(value) {
+    if (value === KeyframeInterpolationType.HOLD) return "hold";
+    if (value === KeyframeInterpolationType.BEZIER) return "bezier";
+    return "linear";
+}
+
+function aeInterpolationValue(value) {
+    if (value === "hold") return KeyframeInterpolationType.HOLD;
+    if (value === "bezier") return KeyframeInterpolationType.BEZIER;
+    return KeyframeInterpolationType.LINEAR;
+}
+
+function aeSerializeKeyframes(property) {
+    var keys = [];
+    if (!property || property.numKeys === undefined) return keys;
+    for (var i = 1; i <= property.numKeys; i++) {
+        var key = {
+            index: i,
+            time: property.keyTime(i),
+            value: aeSafeValue(property.keyValue(i))
+        };
+        try {
+            key.inInterpolation = aeInterpolationName(property.keyInInterpolationType(i));
+            key.outInterpolation = aeInterpolationName(property.keyOutInterpolationType(i));
+            key.temporalAutoBezier = property.keyTemporalAutoBezier(i);
+            key.temporalContinuous = property.keyTemporalContinuous(i);
+        } catch (_keyMetadataError) {}
+        keys.push(key);
+    }
+    return keys;
+}
+
+function aeSerializeProperty(property, depth, maxDepth, includeValues) {
+    var result = {
+        name: property.name,
+        matchName: property.matchName,
+        index: property.propertyIndex,
+        propertyType: property.propertyType,
+        numProperties: property.numProperties || 0
+    };
+    try { result.enabled = property.enabled; } catch (_enabledError) {}
+    try { result.selected = property.selected; } catch (_selectedError) {}
+    if (property.propertyType === PropertyType.PROPERTY) {
+        try { if (includeValues !== false) result.value = aeSafeValue(property.value); } catch (_readValueError) {}
+        try { result.numKeys = property.numKeys; } catch (_numKeysError) {}
+        try {
+            if (property.canSetExpression) {
+                result.expressionEnabled = property.expressionEnabled;
+                result.expression = property.expression;
+                result.expressionError = property.expressionError;
+            }
+        } catch (_expressionError) {}
+    }
+    if (depth < maxDepth && property.numProperties) {
+        result.properties = [];
+        for (var i = 1; i <= property.numProperties; i++) {
+            result.properties.push(aeSerializeProperty(property.property(i), depth + 1, maxDepth, includeValues));
+        }
+    }
+    return result;
+}
+
+function aeSetEffectSettings(effect, settings) {
+    if (!settings) return [];
+    var changed = [];
+    for (var settingName in settings) {
+        if (!settings.hasOwnProperty(settingName)) continue;
+        var property = null;
+        try { property = effect.property(settingName); } catch (_effectDirectError) {}
+        if (!property) {
+            for (var i = 1; i <= effect.numProperties; i++) {
+                var candidate = effect.property(i);
+                if (candidate.name === settingName || candidate.matchName === settingName) {
+                    property = candidate;
+                    break;
+                }
+            }
+        }
+        if (property && property.setValue) {
+            property.setValue(settings[settingName]);
+            changed.push(settingName);
+        }
+    }
+    return changed;
+}
+
+function aeInspect(args) {
+    var scope = args.scope || "composition";
+    if (scope === "project") {
+        var projectResult = {
+            name: app.project.file ? app.project.file.name : "Untitled Project",
+            path: app.project.file ? app.project.file.fsName : "",
+            bitsPerChannel: app.project.bitsPerChannel,
+            numItems: app.project.numItems,
+            items: []
+        };
+        var maxItems = args.maxItems || 200;
+        for (var i = 1; i <= Math.min(app.project.numItems, maxItems); i++) {
+            var item = app.project.item(i);
+            projectResult.items.push({
+                index: i,
+                id: item.id,
+                name: item.name,
+                type: item instanceof CompItem ? "composition" : (item instanceof FolderItem ? "folder" : "footage")
+            });
+        }
+        return projectResult;
+    }
+
+    var comp = aeGetComposition(args);
+    if (scope === "composition") {
+        var compResult = {
+            index: comp.index,
+            id: comp.id,
+            name: comp.name,
+            width: comp.width,
+            height: comp.height,
+            duration: comp.duration,
+            frameRate: comp.frameRate,
+            time: comp.time,
+            workAreaStart: comp.workAreaStart,
+            workAreaDuration: comp.workAreaDuration,
+            numLayers: comp.numLayers,
+            layers: []
+        };
+        for (var l = 1; l <= comp.numLayers; l++) {
+            var layerItem = comp.layer(l);
+            compResult.layers.push({
+                index: layerItem.index,
+                name: layerItem.name,
+                enabled: layerItem.enabled,
+                locked: layerItem.locked,
+                shy: layerItem.shy,
+                solo: layerItem.solo,
+                threeDLayer: layerItem.threeDLayer,
+                inPoint: layerItem.inPoint,
+                outPoint: layerItem.outPoint
+            });
+        }
+        return compResult;
+    }
+
+    var layer = aeGetLayer(comp, args);
+    if (scope === "layer") {
+        return aeSerializeProperty(layer, 0, args.depth === undefined ? 1 : args.depth, args.includeValues);
+    }
+    if (scope === "propertyTree") {
+        var propertyRoot = args.propertyPath ? aeResolveProperty(layer, args.propertyPath) : layer;
+        return aeSerializeProperty(propertyRoot, 0, args.depth === undefined ? 4 : args.depth, args.includeValues);
+    }
+    if (scope === "effects") {
+        var effects = layer.property("ADBE Effect Parade");
+        var effectResults = [];
+        for (var e = 1; e <= effects.numProperties; e++) {
+            effectResults.push(aeSerializeProperty(effects.property(e), 0, args.depth === undefined ? 2 : args.depth, true));
+        }
+        return effectResults;
+    }
+    if (scope === "keyframes") {
+        return aeSerializeKeyframes(aeResolveProperty(layer, args.propertyPath));
+    }
+    throw new Error("Unsupported inspection scope: " + scope);
+}
+
+function aePropertyCommand(args) {
+    var comp = aeGetComposition(args);
+    var layer = aeGetLayer(comp, args);
+    var property = aeResolveProperty(layer, args.propertyPath);
+    if (args.action === "get") return aeSerializeProperty(property, 0, args.depth || 0, true);
+    if (args.action === "set") {
+        if (args.time !== undefined && args.time !== null) property.setValueAtTime(args.time, args.value);
+        else property.setValue(args.value);
+        return { property: property.name, value: aeSafeValue(property.value) };
+    }
+    if (args.action === "expression") {
+        if (!property.canSetExpression) throw new Error("Property cannot accept expressions.");
+        property.expression = args.expression || "";
+        return { property: property.name, expression: property.expression, expressionEnabled: property.expressionEnabled };
+    }
+    throw new Error("Unsupported property action: " + args.action);
+}
+
+function aeApplyKeyframeOptions(property, index, args) {
+    if (args.inInterpolation || args.outInterpolation) {
+        property.setInterpolationTypeAtKey(
+            index,
+            aeInterpolationValue(args.inInterpolation || "linear"),
+            aeInterpolationValue(args.outInterpolation || args.inInterpolation || "linear")
+        );
+    }
+    if (args.temporalAutoBezier !== undefined) property.setTemporalAutoBezierAtKey(index, args.temporalAutoBezier);
+    if (args.temporalContinuous !== undefined) property.setTemporalContinuousAtKey(index, args.temporalContinuous);
+    if (args.inEase && args.outEase) {
+        var inEase = [];
+        var outEase = [];
+        for (var i = 0; i < args.inEase.length; i++) inEase.push(new KeyframeEase(args.inEase[i].speed, args.inEase[i].influence));
+        for (var o = 0; o < args.outEase.length; o++) outEase.push(new KeyframeEase(args.outEase[o].speed, args.outEase[o].influence));
+        property.setTemporalEaseAtKey(index, inEase, outEase);
+    }
+}
+
+function aeKeyframeCommand(args) {
+    var comp = aeGetComposition(args);
+    var layer = aeGetLayer(comp, args);
+    var property = aeResolveProperty(layer, args.propertyPath);
+    if (args.action === "get") return aeSerializeKeyframes(property);
+    if (args.action === "set") {
+        property.setValueAtTime(args.time, args.value);
+        var index = property.nearestKeyIndex(args.time);
+        aeApplyKeyframeOptions(property, index, args);
+        return { property: property.name, keyframe: aeSerializeKeyframes(property)[index - 1] };
+    }
+    if (args.action === "update") {
+        var updateIndex = args.index || property.nearestKeyIndex(args.time);
+        if (args.value !== undefined) property.setValueAtKey(updateIndex, args.value);
+        aeApplyKeyframeOptions(property, updateIndex, args);
+        return { property: property.name, keyframe: aeSerializeKeyframes(property)[updateIndex - 1] };
+    }
+    if (args.action === "remove") {
+        var removeIndex = args.index || property.nearestKeyIndex(args.time);
+        property.removeKey(removeIndex);
+        return { property: property.name, removedIndex: removeIndex, remaining: property.numKeys };
+    }
+    if (args.action === "clear") {
+        while (property.numKeys > 0) property.removeKey(property.numKeys);
+        return { property: property.name, remaining: 0 };
+    }
+    throw new Error("Unsupported keyframe action: " + args.action);
+}
+
+function aeEffectCommand(args) {
+    var comp = aeGetComposition(args);
+    var layer = aeGetLayer(comp, args);
+    var effects = layer.property("ADBE Effect Parade");
+    if (args.action === "get") {
+        var effectResults = [];
+        for (var e = 1; e <= effects.numProperties; e++) {
+            effectResults.push(aeSerializeProperty(effects.property(e), 0, args.depth === undefined ? 2 : args.depth, true));
+        }
+        return effectResults;
+    }
+    if (args.action === "add") {
+        if (args.presetPath) {
+            var preset = new File(args.presetPath);
+            if (!preset.exists) throw new Error("Preset not found: " + args.presetPath);
+            layer.applyPreset(preset);
+            return { preset: preset.fsName, applied: true };
+        }
+        var added = effects.addProperty(args.matchName || args.name);
+        var addedChanges = aeSetEffectSettings(added, args.settings);
+        return {
+            index: added.propertyIndex,
+            name: added.name,
+            matchName: added.matchName,
+            changedProperties: addedChanges
+        };
+    }
+    var effect = effects.property(args.effectIndex || args.effectName);
+    if (!effect) throw new Error("Effect not found.");
+    if (args.action === "update") {
+        var changed = aeSetEffectSettings(effect, args.settings);
+        if (args.newName) { effect.name = args.newName; changed.push("name"); }
+        if (args.enabled !== undefined) { effect.enabled = args.enabled; changed.push("enabled"); }
+        return { index: effect.propertyIndex, name: effect.name, matchName: effect.matchName, changedProperties: changed };
+    }
+    if (args.action === "remove") {
+        var removedName = effect.name;
+        effect.remove();
+        return { removed: removedName };
+    }
+    if (args.action === "move") {
+        effect.moveTo(args.toIndex);
+        return { name: effect.name, index: effect.propertyIndex };
+    }
+    throw new Error("Unsupported effect action: " + args.action);
+}
+
+function aeLayerCommand(args) {
+    var comp = aeGetComposition(args);
+    if (args.action === "add") {
+        var created = null;
+        if (args.type === "text") created = comp.layers.addText(args.text || "");
+        else if (args.type === "null") created = comp.layers.addNull(args.duration || comp.duration);
+        else if (args.type === "solid") created = comp.layers.addSolid(args.color || [1, 1, 1], args.name || "Solid", args.width || comp.width, args.height || comp.height, args.pixelAspect || 1, args.duration || comp.duration);
+        else if (args.type === "shape") created = comp.layers.addShape();
+        else if (args.type === "camera") created = comp.layers.addCamera(args.name || "Camera", args.centerPoint || [comp.width / 2, comp.height / 2]);
+        else if (args.type === "light") created = comp.layers.addLight(args.name || "Light", args.centerPoint || [comp.width / 2, comp.height / 2]);
+        else throw new Error("Unsupported layer type: " + args.type);
+        if (args.name) created.name = args.name;
+        if (args.position) created.property("ADBE Transform Group").property("ADBE Position").setValue(args.position);
+        return { index: created.index, name: created.name, type: args.type };
+    }
+
+    var layer = aeGetLayer(comp, args);
+    if (args.action === "update") {
+        var changed = [];
+        var switches = ["name", "enabled", "locked", "shy", "solo", "threeDLayer", "adjustmentLayer", "guideLayer", "motionBlur", "collapseTransformation", "inPoint", "outPoint", "startTime", "stretch", "label", "comment"];
+        for (var i = 0; i < switches.length; i++) {
+            var key = switches[i];
+            if (args[key] !== undefined) {
+                layer[key] = args[key];
+                changed.push(key);
+            }
+        }
+        if (args.parentLayerIndex !== undefined) {
+            layer.parent = args.parentLayerIndex === null ? null : comp.layer(args.parentLayerIndex);
+            changed.push("parent");
+        }
+        return { index: layer.index, name: layer.name, changedProperties: changed };
+    }
+    if (args.action === "duplicate") {
+        var duplicate = layer.duplicate();
+        if (args.newName) duplicate.name = args.newName;
+        return { index: duplicate.index, name: duplicate.name };
+    }
+    if (args.action === "remove") {
+        var layerName = layer.name;
+        layer.remove();
+        return { removed: layerName };
+    }
+    if (args.action === "move") {
+        if (args.where === "beginning") layer.moveToBeginning();
+        else if (args.where === "end") layer.moveToEnd();
+        else if (args.where === "before") layer.moveBefore(comp.layer(args.referenceLayerIndex));
+        else if (args.where === "after") layer.moveAfter(comp.layer(args.referenceLayerIndex));
+        else throw new Error("Unsupported move target.");
+        return { index: layer.index, name: layer.name };
+    }
+    throw new Error("Unsupported layer action: " + args.action);
+}
+
+function aeCompositionCommand(args) {
+    if (args.action === "create") {
+        var created = app.project.items.addComp(args.name || "Composition", args.width || 1920, args.height || 1080, args.pixelAspect || 1, args.duration || 10, args.frameRate || 25);
+        return { index: created.index, id: created.id, name: created.name };
+    }
+    var comp = aeGetComposition(args);
+    if (args.action === "get") {
+        return {
+            id: comp.id,
+            name: comp.name,
+            width: comp.width,
+            height: comp.height,
+            duration: comp.duration,
+            frameRate: comp.frameRate,
+            time: comp.time,
+            workAreaStart: comp.workAreaStart,
+            workAreaDuration: comp.workAreaDuration,
+            numLayers: comp.numLayers
+        };
+    }
+    if (args.action === "update") {
+        var changed = [];
+        var keys = ["name", "width", "height", "duration", "frameRate", "workAreaStart", "workAreaDuration", "displayStartTime", "resolutionFactor", "bgColor"];
+        for (var i = 0; i < keys.length; i++) {
+            var key = keys[i];
+            if (args[key] !== undefined) {
+                comp[key] = args[key];
+                changed.push(key);
+            }
+        }
+        return { index: comp.index, name: comp.name, changedProperties: changed };
+    }
+    if (args.action === "duplicate") {
+        var duplicate = comp.duplicate();
+        if (args.newName) duplicate.name = args.newName;
+        return { index: duplicate.index, id: duplicate.id, name: duplicate.name };
+    }
+    if (args.action === "remove") {
+        var compName = comp.name;
+        comp.remove();
+        return { removed: compName };
+    }
+    throw new Error("Unsupported composition action: " + args.action);
+}
+
+function aeProjectCommand(args) {
+    if (args.action === "get") return aeInspect({ scope: "project", maxItems: args.maxItems });
+    if (args.action === "import") {
+        var importFile = new File(args.path);
+        if (!importFile.exists) throw new Error("Import file not found: " + args.path);
+        var importOptions = new ImportOptions(importFile);
+        if (args.sequence !== undefined) importOptions.sequence = args.sequence;
+        var imported = app.project.importFile(importOptions);
+        return { index: imported.index, id: imported.id, name: imported.name };
+    }
+    if (args.action === "createFolder") {
+        var folder = app.project.items.addFolder(args.name || "Folder");
+        return { index: folder.index, id: folder.id, name: folder.name };
+    }
+    if (args.action === "save") {
+        if (args.path) app.project.save(new File(args.path));
+        else app.project.save();
+        return { path: app.project.file ? app.project.file.fsName : "" };
+    }
+    if (args.action === "queueRender") {
+        var comp = aeGetComposition(args);
+        var renderItem = app.project.renderQueue.items.add(comp);
+        if (args.outputPath) renderItem.outputModule(1).file = new File(args.outputPath);
+        if (args.renderNow) app.project.renderQueue.render();
+        return { renderQueueIndex: renderItem.index, comp: comp.name, outputPath: renderItem.outputModule(1).file ? renderItem.outputModule(1).file.fsName : "" };
+    }
+    throw new Error("Unsupported project action: " + args.action);
+}
+
+function aeFrameCommand(args) {
+    var comp = aeGetComposition(args);
+    if (args.action === "copy") {
+        var commandId = app.findMenuCommandId("Copy Frame to Clipboard");
+        if (!commandId) throw new Error("Copy Frame to Clipboard command was not found.");
+        app.executeCommand(commandId);
+        return { copiedToClipboard: true, time: comp.time, commandId: commandId };
+    }
+    if (args.action === "capture") {
+        var captureFolder = new Folder(Folder.myDocuments.fsName + "/ae-mcp-bridge/captures");
+        if (!captureFolder.exists) captureFolder.create();
+        var time = args.time !== undefined ? args.time : comp.time;
+        var safeName = comp.name.replace(/[\\\/:*?"<>|]/g, "_");
+        var outputFile = args.outputPath ? new File(args.outputPath) : new File(captureFolder.fsName + "/" + safeName + "_" + Math.round(time * comp.frameRate) + ".png");
+        comp.saveFrameToPng(time, outputFile);
+        return { path: outputFile.fsName, time: time, frame: Math.round(time * comp.frameRate), composition: comp.name };
+    }
+    throw new Error("Unsupported frame action: " + args.action);
+}
+
+function aeCommand(args) {
+    app.beginUndoGroup("After Effects MCP Command");
+    try {
+        var data = null;
+        if (args.operation === "inspect") data = aeInspect(args);
+        else if (args.operation === "property") data = aePropertyCommand(args);
+        else if (args.operation === "keyframe") data = aeKeyframeCommand(args);
+        else if (args.operation === "effect") data = aeEffectCommand(args);
+        else if (args.operation === "layer") data = aeLayerCommand(args);
+        else if (args.operation === "composition") data = aeCompositionCommand(args);
+        else if (args.operation === "project") data = aeProjectCommand(args);
+        else if (args.operation === "frame") data = aeFrameCommand(args);
+        else throw new Error("Unsupported operation: " + args.operation);
+        return JSON.stringify({ status: "success", operation: args.operation, action: args.action, data: data });
+    } catch (error) {
+        return JSON.stringify({ status: "error", operation: args.operation, action: args.action, message: error.toString(), line: error.line || null });
+    } finally {
+        app.endUndoGroup();
+    }
+}
+
 // Execute command
 function executeCommand(command, args) {
     var result = "";
@@ -1595,6 +2244,16 @@ function executeCommand(command, args) {
                 result = setLayerMask(args);
                 logToPanel("Returned from setLayerMask.");
                 break;
+            case "createTextAnimator":
+                logToPanel("Calling createTextAnimator function...");
+                result = createTextAnimator(args);
+                logToPanel("Returned from createTextAnimator.");
+                break;
+            case "aeCommand":
+                logToPanel("Calling aeCommand function...");
+                result = aeCommand(args);
+                logToPanel("Returned from aeCommand.");
+                break;
             default:
                 result = JSON.stringify({ error: "Unknown command: " + command });
         }
@@ -1608,7 +2267,7 @@ function executeCommand(command, args) {
         try {
             var resultObj = JSON.parse(resultString);
             // Add a timestamp to help identify if we're getting fresh results
-            resultObj._responseTimestamp = new Date().toISOString();
+            resultObj._responseTimestamp = (new Date()).getTime();
             resultObj._commandExecuted = command;
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");
