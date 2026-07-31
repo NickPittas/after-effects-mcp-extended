@@ -1742,6 +1742,9 @@ chatTrustAeMcp.onClick = function () {
 var checkInterval = 750;
 var isChecking = false;
 var lastBridgeCommand = "";
+var bridgeInstanceId = String((new Date()).getTime()) + "-" + String(Math.floor(Math.random() * 1000000));
+var bridgeLastTickAt = 0;
+var bridgeIsClosing = false;
 
 function writeBridgeHeartbeat(stateName) {
     try {
@@ -1749,11 +1752,13 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.9.11",
+            version: "1.10.0",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
+            instanceId: bridgeInstanceId,
+            taskId: $.global.__aeMcpBridgeCommandTaskId || null,
             lastCommand: lastBridgeCommand,
-            updatedAt: (new Date()).toISOString ? (new Date()).toISOString() : String((new Date()).getTime())
+            updatedAt: (new Date()).getTime()
         }, null, 2));
         heartbeat.close();
     } catch (_heartbeatError) {}
@@ -4553,6 +4558,7 @@ function logToPanel(message) {
 
 // Check for new commands
 function checkForCommands() {
+    bridgeLastTickAt = (new Date()).getTime();
     writeBridgeHeartbeat(autoRunCheckbox.value ? "ready" : "paused");
     if (!autoRunCheckbox.value || isChecking) return;
     
@@ -4589,17 +4595,59 @@ function checkForCommands() {
     writeBridgeHeartbeat("ready");
 }
 
-// Set up timer to check for commands
+function scheduleNextBridgeCheck() {
+    if (bridgeIsClosing || $.global.__aeMcpBridgeInstanceId !== bridgeInstanceId) return;
+    $.global.__aeMcpBridgeCommandTaskId = app.scheduleTask(
+        "$.global.__aeMcpBridgeScheduledTick && $.global.__aeMcpBridgeScheduledTick()",
+        checkInterval,
+        false
+    );
+}
+
+function scheduledBridgeTick() {
+    if (bridgeIsClosing || $.global.__aeMcpBridgeInstanceId !== bridgeInstanceId) return;
+    try {
+        checkForCommands();
+    } catch (error) {
+        isChecking = false;
+        logToPanel("Bridge timer error: " + error.toString());
+        writeBridgeHeartbeat("error");
+    } finally {
+        try { scheduleNextBridgeCheck(); }
+        catch (scheduleError) {
+            logToPanel("Unable to continue bridge timer: " + scheduleError.toString());
+            writeBridgeHeartbeat("error");
+        }
+    }
+}
+
+function stopCommandChecker() {
+    bridgeIsClosing = true;
+    if ($.global.__aeMcpBridgeCommandTaskId) {
+        try { app.cancelTask($.global.__aeMcpBridgeCommandTaskId); } catch (_cancelBridgeTaskError) {}
+    }
+    if ($.global.__aeMcpBridgeInstanceId === bridgeInstanceId) {
+        $.global.__aeMcpBridgeCommandTaskId = null;
+        $.global.__aeMcpBridgeScheduledTick = null;
+        $.global.__aeMcpBridgeInstanceId = null;
+    }
+    writeBridgeHeartbeat("closed");
+}
+
+// Bind the callback again every time AE creates or restores this panel. A task
+// ID from a previous AE process is meaningless in the new scripting engine.
 function startCommandChecker() {
     try {
         if ($.global.__aeMcpBridgeCommandTaskId) {
             try { app.cancelTask($.global.__aeMcpBridgeCommandTaskId); } catch (_cancelOldTaskError) {}
         }
-        // AE evaluates scheduled strings in its scripting scope. Calling the
-        // top-level function directly works reliably there; routing through a
-        // property on $.global can create a valid task ID that never fires.
-        $.global.__aeMcpBridgeCommandTaskId = app.scheduleTask("checkForCommands()", checkInterval, true);
+        bridgeIsClosing = false;
+        bridgeInstanceId = String((new Date()).getTime()) + "-" + String(Math.floor(Math.random() * 1000000));
+        $.global.__aeMcpBridgeInstanceId = bridgeInstanceId;
+        $.global.__aeMcpBridgeScheduledTick = scheduledBridgeTick;
+        writeBridgeHeartbeat("starting");
         checkForCommands();
+        scheduleNextBridgeCheck();
     } catch (error) {
         isChecking = false;
         logToPanel("Unable to start bridge timer: " + error.toString());
@@ -4612,6 +4660,11 @@ var checkButton = bridgeTab.add("button", undefined, "Check for Commands Now");
 checkButton.onClick = function() {
     logToPanel("Manually checking for commands");
     checkForCommands();
+};
+
+autoRunCheckbox.onClick = function () {
+    if (!bridgeIsClosing && ((new Date()).getTime() - bridgeLastTickAt > checkInterval * 3)) startCommandChecker();
+    writeBridgeHeartbeat(autoRunCheckbox.value ? "ready" : "paused");
 };
 
 // Log startup
@@ -4629,6 +4682,15 @@ panel.onResizing = panel.onResize = function() {
         chatPrompt.preferredSize.height = compactChat ? 46 : 72;
         if (lastChatState) renderChatTranscript(lastChatState.transcript || []);
     } catch (_chatResizeError) {}
+};
+
+panel.onActivate = function () {
+    if (bridgeIsClosing || ((new Date()).getTime() - bridgeLastTickAt > checkInterval * 3)) startCommandChecker();
+};
+
+panel.onClose = function () {
+    stopCommandChecker();
+    return true;
 };
 
 // A host-provided ScriptUI Panel is already visible through the Window menu.

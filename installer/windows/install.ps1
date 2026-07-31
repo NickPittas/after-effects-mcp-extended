@@ -3,7 +3,11 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$PayloadPath,
     [switch]$Elevated,
-    [switch]$DryRun
+    [switch]$DryRun,
+    [string]$TargetUserProfile,
+    [string]$TargetAppData,
+    [string]$TargetLocalAppData,
+    [string]$TargetUserSid
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +33,11 @@ function Test-Administrator {
 function Start-ElevatedInstaller {
     $escapedScript = $PSCommandPath.Replace("'", "''")
     $escapedPayload = (Resolve-Path -LiteralPath $PayloadPath).Path.Replace("'", "''")
-    $command = "& '$escapedScript' -PayloadPath '$escapedPayload' -Elevated"
+    $escapedUserProfile = $env:USERPROFILE.Replace("'", "''")
+    $escapedAppData = $env:APPDATA.Replace("'", "''")
+    $escapedLocalAppData = $env:LOCALAPPDATA.Replace("'", "''")
+    $escapedUserSid = ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value).Replace("'", "''")
+    $command = "& '$escapedScript' -PayloadPath '$escapedPayload' -Elevated -TargetUserProfile '$escapedUserProfile' -TargetAppData '$escapedAppData' -TargetLocalAppData '$escapedLocalAppData' -TargetUserSid '$escapedUserSid'"
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     try {
         $process = Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
@@ -86,13 +94,22 @@ function Find-CodexExecutable {
     foreach ($candidate in @(
         (Join-Path $env:LOCALAPPDATA "Programs\OpenAI\Codex\bin\codex.exe"),
         (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe"),
-        (Join-Path $env:USERPROFILE ".local\bin\codex.exe")
+        (Join-Path $env:USERPROFILE ".local\bin\codex.exe"),
+        (Join-Path $env:APPDATA "npm\codex.cmd")
     )) {
         if ($candidate -and -not $candidates.Contains($candidate)) { $candidates.Add($candidate) }
     }
-    $onPath = Get-Command codex.exe -ErrorAction SilentlyContinue
-    if ($onPath -and -not $candidates.Contains($onPath.Source)) { $candidates.Insert(0, $onPath.Source) }
-    return $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+    Get-Command codex -All -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Source -and -not $candidates.Contains($_.Source)) { $candidates.Add($_.Source) }
+    }
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate)) { continue }
+        try {
+            & $candidate --version *> $null
+            if ($LASTEXITCODE -eq 0) { return $candidate }
+        } catch {}
+    }
+    return $null
 }
 
 function Stop-ChatCompanion {
@@ -106,6 +123,17 @@ if (-not (Test-Path -LiteralPath $PayloadPath)) {
     exit 2
 }
 if (-not $DryRun -and -not (Test-Administrator)) { Start-ElevatedInstaller }
+
+# Over-the-shoulder UAC can run the elevated half under a different admin
+# account. Keep every per-user file and registry write bound to the user who
+# launched setup, while using elevation only for AE's Program Files folders.
+if ($Elevated -and $TargetUserProfile -and $TargetAppData -and $TargetLocalAppData) {
+    $env:USERPROFILE = $TargetUserProfile
+    $env:HOME = $TargetUserProfile
+    $env:APPDATA = $TargetAppData
+    $env:LOCALAPPDATA = $TargetLocalAppData
+}
+$userRegistryRoot = if ($Elevated -and $TargetUserSid) { "Registry::HKEY_USERS\$TargetUserSid" } else { "HKCU:" }
 
 $workRoot = Join-Path $env:TEMP ("AfterEffectsMCP-Install-" + [Guid]::NewGuid().ToString("N"))
 try {
@@ -127,6 +155,7 @@ try {
     foreach ($required in @(
         (Join-Path $payloadApp "after-effects-mcp-extended.exe"),
         (Join-Path $payloadApp "after-effects-codex-chat.exe"),
+        (Join-Path $payloadApp "pi-after-effects-extension.ts"),
         (Join-Path $payloadApp "launch-chat.vbs"),
         (Join-Path $payloadCep "CSXS\manifest.xml"),
         $payloadBridge,
@@ -162,6 +191,15 @@ try {
     $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
     $appFolder = Join-Path $appData "AfterEffectsMCP"
     $cepFolder = Join-Path $appData "Adobe\CEP\extensions\$extensionId"
+    foreach ($target in @($appFolder, $cepFolder)) {
+        if (-not (Test-Path -LiteralPath $target)) { continue }
+        $resolvedTarget = [IO.Path]::GetFullPath($target)
+        $resolvedAppData = [IO.Path]::GetFullPath($appData).TrimEnd('\') + '\'
+        if (-not $resolvedTarget.StartsWith($resolvedAppData, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to replace an unexpected installation directory: $resolvedTarget"
+        }
+        Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+    }
     New-Item -ItemType Directory -Path $appFolder -Force | Out-Null
     New-Item -ItemType Directory -Path $cepFolder -Force | Out-Null
 
@@ -183,7 +221,7 @@ try {
     }
 
     foreach ($csxsVersion in 9..12) {
-        $key = "HKCU:\Software\Adobe\CSXS.$csxsVersion"
+        $key = "$userRegistryRoot\Software\Adobe\CSXS.$csxsVersion"
         New-Item -Path $key -Force | Out-Null
         New-ItemProperty -Path $key -Name "PlayerDebugMode" -Value "1" -PropertyType String -Force | Out-Null
     }
@@ -209,7 +247,7 @@ try {
     }
     $state | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $appFolder "install-state.json") -Encoding UTF8
 
-    $uninstallKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AfterEffectsMCPExtended"
+    $uninstallKey = "$userRegistryRoot\Software\Microsoft\Windows\CurrentVersion\Uninstall\AfterEffectsMCPExtended"
     New-Item -Path $uninstallKey -Force | Out-Null
     New-ItemProperty -Path $uninstallKey -Name "DisplayName" -Value $productName -PropertyType String -Force | Out-Null
     New-ItemProperty -Path $uninstallKey -Name "DisplayVersion" -Value $productVersion -PropertyType String -Force | Out-Null
