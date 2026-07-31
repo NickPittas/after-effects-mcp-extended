@@ -20,7 +20,7 @@ Extended capabilities include:
 - Text animators with character, word, and line range selectors
 - Improved bridge response tracking and direct rendered-frame image returns
 - Dockable, resizable ScriptUI bridge panel
-- Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, and OpenCode, with per-provider sessions, streamed conversations, account/setup controls, viewer/UI screenshots, live tool activity, Stop, and autonomous mode
+- Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, and OpenCode, with per-provider sessions, chronologically segmented streamed conversations, timestamped expandable tool groups, account/setup controls, viewer/UI screenshots, Stop, and autonomous mode
 - Shared After Effects system instructions for every CLI harness, with the live operation matrix, parameter guidance, native-object rules, and verification behavior
 - Standalone Windows MCP and chat executables; release users do not need Node.js or npm
 

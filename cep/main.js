@@ -14,6 +14,7 @@
   var toastTimer = null;
   var lastCompanionLaunch = 0;
   var localSending = false;
+  var expandedToolGroups = {};
 
   var elements = {
     conversation: document.getElementById("conversation"),
@@ -128,8 +129,12 @@
     return (words[0].charAt(0) + (words.length > 1 ? words[words.length - 1].charAt(0) : words[0].charAt(1) || "")).toUpperCase();
   }
 
-  function formatTime(value) {
-    try { return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }); }
+  function formatTimestamp(value) {
+    try {
+      return new Date(value).toLocaleString([], {
+        month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit"
+      });
+    }
     catch (_) { return ""; }
   }
 
@@ -200,7 +205,9 @@
     role.className = "message-role";
     role.textContent = entry.role === "assistant" ? (entry.providerLabel || (state && state.providerName) || "Assistant") : entry.role === "user" ? "You" : "System";
     var time = document.createElement("span");
-    time.textContent = formatTime(entry.time);
+    time.className = "message-time";
+    time.textContent = formatTimestamp(entry.time);
+    time.title = new Date(entry.time).toLocaleString();
     meta.appendChild(role);
     meta.appendChild(time);
     var bubble = document.createElement("div");
@@ -226,10 +233,14 @@
     var copy = document.createElement("div");
     var title = document.createElement("strong");
     title.textContent = event.label || "Tool";
+    var time = document.createElement("time");
+    time.textContent = formatTimestamp(event.time);
+    time.title = new Date(event.time).toLocaleString();
     var detail = document.createElement("small");
     detail.textContent = event.detail || "Working";
     detail.title = detail.textContent;
     copy.appendChild(title);
+    copy.appendChild(time);
     copy.appendChild(detail);
     var status = document.createElement("span");
     status.className = "tool-state";
@@ -240,26 +251,88 @@
     return row;
   }
 
+  function createToolGroup(events) {
+    var group = document.createElement("section");
+    group.className = "tool-group";
+    var groupId = events.map(function (event) { return event.id; }).join("|");
+    var hasRunning = events.some(function (event) { return event.status === "running"; });
+    var hasFailed = events.some(function (event) { return event.status === "failed"; });
+    var expanded = hasRunning || hasFailed || expandedToolGroups[groupId] === true;
+
+    var header = document.createElement("button");
+    header.type = "button";
+    header.className = "tool-group-header";
+    header.setAttribute("aria-expanded", expanded ? "true" : "false");
+    var chevron = document.createElement("span");
+    chevron.className = "tool-group-chevron";
+    chevron.textContent = expanded ? "−" : "+";
+    var title = document.createElement("strong");
+    title.textContent = events.length === 1 ? (events[0].label || "Tool") : "Tools · " + events.length + " actions";
+    var time = document.createElement("time");
+    time.textContent = formatTimestamp(events[0].time);
+    var status = document.createElement("span");
+    status.className = "tool-group-status " + (hasFailed ? "failed" : hasRunning ? "running" : "completed");
+    status.textContent = hasFailed ? "Failed" : hasRunning ? "Working" : "Done";
+    header.appendChild(chevron);
+    header.appendChild(title);
+    header.appendChild(time);
+    header.appendChild(status);
+
+    var body = document.createElement("div");
+    body.className = "tool-group-body";
+    body.hidden = !expanded;
+    events.forEach(function (event) { body.appendChild(createToolEvent(event)); });
+    header.addEventListener("click", function () {
+      var willExpand = body.hidden;
+      body.hidden = !willExpand;
+      expandedToolGroups[groupId] = willExpand;
+      header.setAttribute("aria-expanded", willExpand ? "true" : "false");
+      chevron.textContent = willExpand ? "−" : "+";
+    });
+    group.appendChild(header);
+    group.appendChild(body);
+    return group;
+  }
+
+  function compareTimelineItems(a, b) {
+    var aSequence = Number(a.value.sequence);
+    var bSequence = Number(b.value.sequence);
+    var aHasSequence = isFinite(aSequence) && aSequence > 0;
+    var bHasSequence = isFinite(bSequence) && bSequence > 0;
+    if (aHasSequence && bHasSequence && aSequence !== bSequence) return aSequence - bSequence;
+    if (aHasSequence !== bHasSequence) return aHasSequence ? 1 : -1;
+    var difference = new Date(a.time).getTime() - new Date(b.time).getTime();
+    return difference || a.fallbackOrder - b.fallbackOrder;
+  }
+
   function renderConversation() {
     if (!state) return;
     var transcript = state.transcript || [];
     var events = state.activityLog || [];
     var items = transcript.map(function (entry, index) {
-      return { type: "message", time: entry.time, value: entry, index: index };
+      return { type: "message", time: entry.time, value: entry, index: index, fallbackOrder: index * 2 };
     });
     if (toolsVisible) {
-      items = items.concat(events.map(function (event) { return { type: "tool", time: event.time, value: event }; }));
-      items.sort(function (a, b) { return new Date(a.time).getTime() - new Date(b.time).getTime(); });
+      items = items.concat(events.map(function (event, index) { return { type: "tool", time: event.time, value: event, fallbackOrder: index * 2 + 1 }; }));
     }
+    items.sort(compareTimelineItems);
     var previousBottomDistance = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight;
     var fragment = document.createDocumentFragment();
-    items.forEach(function (item) {
-      if (item.type === "tool") fragment.appendChild(createToolEvent(item.value));
-      else {
-        var streaming = state.busy && item.value.role === "assistant" && item.index === transcript.length - 1;
+    for (var itemIndex = 0; itemIndex < items.length; itemIndex++) {
+      var item = items[itemIndex];
+      if (item.type === "tool") {
+        var toolEvents = [];
+        while (itemIndex < items.length && items[itemIndex].type === "tool") {
+          toolEvents.push(items[itemIndex].value);
+          itemIndex++;
+        }
+        itemIndex--;
+        fragment.appendChild(createToolGroup(toolEvents));
+      } else {
+        var streaming = state.busy && state.activity && state.activity.kind === "responding" && item.value.role === "assistant" && item.index === transcript.length - 1;
         fragment.appendChild(createMessage(item.value, streaming));
       }
-    });
+    }
     elements.conversation.replaceChildren(fragment);
     elements.emptyState.hidden = items.length > 0;
     elements.toolsCount.textContent = String(events.length);
