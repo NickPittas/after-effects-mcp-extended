@@ -94,7 +94,7 @@ type ChatRequest = {
   providerId?: CliProviderId;
 };
 
-const VERSION = "1.10.3";
+const VERSION = "1.10.4";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -493,7 +493,7 @@ function ensureCurrentProviderMcp(snapshot: ProviderSnapshot): void {
   }
   if (snapshot.id === "agy") {
     try {
-      writeAgyProjectMcpConfig(mcpExecutable);
+      writeAgyMcpConfigs(mcpExecutable);
       snapshot.mcpStatus = "ready";
     } catch {
       snapshot.mcpStatus = "missing";
@@ -520,8 +520,8 @@ function checkCodex(): boolean {
 
 function findBundledMcpExecutable(): string | null {
   const candidates = [
-    path.join(path.dirname(process.execPath), "after-effects-mcp-extended.exe"),
     path.join(process.env.APPDATA || "", "AfterEffectsMCP", "after-effects-mcp-extended.exe"),
+    path.join(path.dirname(process.execPath), "after-effects-mcp-extended.exe"),
     path.join(os.homedir(), "Documents", "ae-mcp-bridge", "bin", "after-effects-mcp-extended.exe"),
   ];
   return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
@@ -1322,10 +1322,30 @@ function writeKimiCodeProjectMcpConfig(mcpExecutable: string): void {
   writeJsonAtomic(path.join(directory, "mcp.json"), createStandardMcpConfig(mcpExecutable));
 }
 
-function writeAgyProjectMcpConfig(mcpExecutable: string): void {
-  const directory = path.join(CHAT_DIR, ".agents");
-  fs.mkdirSync(directory, { recursive: true });
-  writeJsonAtomic(path.join(directory, "mcp_config.json"), createStandardMcpConfig(mcpExecutable));
+function writeAgyMcpConfigs(mcpExecutable: string): void {
+  const standard = createStandardMcpConfig(mcpExecutable) as { mcpServers: Record<string, unknown> };
+  const workspaceDirectory = path.join(CHAT_DIR, ".agents");
+  fs.mkdirSync(workspaceDirectory, { recursive: true });
+  writeJsonAtomic(path.join(workspaceDirectory, "mcp_config.json"), standard);
+
+  // AGY 1.1.9 does not reliably discover workspace-local MCP configuration
+  // in headless print mode on Windows. Its global config is loaded reliably.
+  // Merge only our named server so existing user MCP servers are preserved.
+  const globalDirectory = path.join(os.homedir(), ".gemini", "config");
+  const globalPath = path.join(globalDirectory, "mcp_config.json");
+  fs.mkdirSync(globalDirectory, { recursive: true });
+  let existing: Record<string, unknown> = {};
+  try {
+    const raw = fs.readFileSync(globalPath, "utf8").replace(/^\uFEFF/, "").trim();
+    if (raw) existing = JSON.parse(raw);
+  } catch {}
+  const existingServers = existing.mcpServers && typeof existing.mcpServers === "object" && !Array.isArray(existing.mcpServers)
+    ? existing.mcpServers as Record<string, unknown>
+    : {};
+  writeJsonAtomic(globalPath, {
+    ...existing,
+    mcpServers: { ...existingServers, AfterEffectsMCP: standard.mcpServers.AfterEffectsMCP },
+  });
 }
 
 function findNpm(): string | null {
@@ -1464,7 +1484,7 @@ class GenericCliClient {
     const provider = state.provider;
     const kimiFlavor = provider === "kimi" ? detectKimiCliFlavor(state.cliPath) : undefined;
     if (kimiFlavor === "kimi-code") writeKimiCodeProjectMcpConfig(mcpExecutable);
-    if (provider === "agy") writeAgyProjectMcpConfig(mcpExecutable);
+    if (provider === "agy") writeAgyMcpConfigs(mcpExecutable);
     const runSpec = buildProviderRunSpec({
       provider,
       promptText,
@@ -1532,12 +1552,13 @@ class GenericCliClient {
         // The next text belongs in a new bubble after this tool activity.
         this.assistantEntry = null;
         const name = event.toolName || "Tool";
-        const isAe = /after.?effects|aftereffectsmcp/i.test(name);
+        const detail = event.toolDetail || "Using tool";
+        const isAe = /after.?effects|aftereffectsmcp/i.test(`${name} ${detail}`);
         const activityId = event.toolId || `${Date.now()}-tool`;
         this.activityIds.add(activityId);
         state.activityLog.push({
           id: activityId, kind: isAe ? "afterEffects" : "tool",
-          label: isAe ? "After Effects" : name, detail: (event.toolDetail || "Using tool").slice(0, 500),
+          label: isAe ? "After Effects" : name, detail: detail.slice(0, 500),
           status: "running", time: new Date().toISOString(),
           sequence: nextTimelineSequence(),
         });

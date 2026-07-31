@@ -120,8 +120,9 @@ session.
 
 Codex uses its native app-server integration. Claude Code, Antigravity CLI,
 Kimi CLI, and OpenCode receive the bundled AfterEffectsMCP server through their
-supported MCP configuration. Antigravity uses its native `.agents/mcp_config.json`
-workspace configuration and `AGENTS.md` instructions. Pi does not provide native MCP support, so the installer
+supported MCP configuration. Antigravity receives the server in its native global
+and `.agents/mcp_config.json` workspace configurations, plus `AGENTS.md` instructions.
+Pi does not provide native MCP support, so the installer
 ships a small Pi extension that exposes the same unified After Effects command
 through the existing local bridge. The companion supplies the same After Effects
 operating instructions through MCP initialization and each CLI's supported

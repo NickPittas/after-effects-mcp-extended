@@ -527,28 +527,41 @@ export function normalizeProviderLine(provider: CliProviderId, line: string): No
   }
 
   if (provider === "agy") {
-    const step = message.step && typeof message.step === "object" ? message.step : {};
-    const sessionId = message.conversation_id || message.conversationId || message.session_id || message.sessionId || step.conversation_id;
+    // AGY 1.1.8+ uses an NDJSON envelope shaped as
+    // {event:"step_update", step_update:{...}}. Keep the older aliases as
+    // fallbacks so a minor CLI schema transition does not blank the chat.
+    const eventType = String(message.event || message.type || "").toLowerCase();
+    const step = message.step_update && typeof message.step_update === "object"
+      ? message.step_update
+      : message.step && typeof message.step === "object" ? message.step : {};
+    const result = message.result && typeof message.result === "object" ? message.result : {};
+    const sessionId = message.conversation_id || message.conversationId || message.session_id || message.sessionId || step.conversation_id || result.conversation_id;
     if (sessionId) events.push({ kind: "session", sessionId: String(sessionId) });
     const toolInfo = message.tool_info || step.tool_info;
-    if (message.type === "step_update" && toolInfo && typeof toolInfo === "object") {
-      const toolId = String(toolInfo.id || toolInfo.tool_id || message.step_id || message.id || "");
-      const toolName = String(toolInfo.name || toolInfo.tool_name || "Tool");
+    if (eventType === "step_update" && String(step.step_type || "").toLowerCase() === "tool" && toolInfo && typeof toolInfo === "object") {
+      const toolId = String(toolInfo.id || toolInfo.tool_id || `${step.conversation_id || "agy"}:${step.step_index ?? message.step_id ?? message.id ?? "tool"}`);
+      const toolName = String(step.tool_name || toolInfo.name || toolInfo.tool_name || "Tool");
       const parameters = toolInfo.parameters || toolInfo.args || toolInfo.input || {};
-      events.push({ kind: "toolStart", toolId, toolName, toolDetail: JSON.stringify(parameters) });
-      if (Object.prototype.hasOwnProperty.call(toolInfo, "output") || toolInfo.status === "completed" || toolInfo.status === "failed") {
-        events.push({ kind: "toolEnd", toolId, toolName, failed: Boolean(toolInfo.error) || toolInfo.status === "failed" });
+      const state = String(step.state || toolInfo.status || "").toUpperCase();
+      if (state === "ACTIVE" || !state) {
+        events.push({ kind: "toolStart", toolId, toolName, toolDetail: JSON.stringify(parameters) });
+      } else if (state === "DONE" || state === "ERROR" || state === "FAILED") {
+        events.push({ kind: "toolEnd", toolId, toolName, failed: state !== "DONE" || Boolean(toolInfo.error) });
       }
-    } else if (message.type === "step_update") {
-      const text = String(message.delta || message.text || message.content || step.delta || step.text || step.content || "");
-      if (text) events.push({ kind: message.delta || step.delta ? "textDelta" : "textBlock", text });
-    } else if (message.type === "error" || message.status === "error") {
+    } else if (eventType === "step_update") {
+      const delta = step.text_delta ?? message.text_delta ?? step.delta ?? message.delta;
+      const text = String(delta ?? step.text ?? message.text ?? step.content ?? message.content ?? "");
+      if (text) events.push({ kind: delta !== undefined ? "textDelta" : "textBlock", text });
+    } else if (eventType === "error" || String(message.status || "").toLowerCase() === "error") {
       events.push({ kind: "error", text: String(message.message || message.error || "Antigravity CLI failed") });
-    } else if (message.type === "result") {
-      const result = message.result || message.response || message.output;
-      const text = typeof result === "string" ? result : result && typeof result === "object" ? String(result.text || result.content || "") : "";
+    } else if (eventType === "result") {
+      const payload = message.result ?? message.response ?? message.output;
+      const text = typeof payload === "string" ? payload : payload && typeof payload === "object" ? String(payload.response || payload.text || payload.content || "") : "";
       if (text) events.push({ kind: "finalText", text });
-      if (message.error || message.status === "error") events.push({ kind: "error", text: String(message.error || message.message || "Antigravity CLI failed") });
+      const resultStatus = String(result.status || message.status || "").toUpperCase();
+      if (message.error || result.error || (resultStatus && resultStatus !== "SUCCESS")) {
+        events.push({ kind: "error", text: String(message.error || result.error || message.message || `Antigravity CLI result: ${resultStatus}`) });
+      }
       events.push({ kind: "complete" });
     }
     return events;

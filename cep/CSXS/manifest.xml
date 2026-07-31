@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <ExtensionManifest Version="7.0"
     ExtensionBundleId="com.nickpittas.aftereffectsmcpextended"
-    ExtensionBundleVersion="1.10.3"
+    ExtensionBundleVersion="1.10.4"
     ExtensionBundleName="After Effects MCP Extended">
     <ExtensionList>
-        <Extension Id="com.nickpittas.aftereffectsmcpextended.chat" Version="1.10.3" />
+        <Extension Id="com.nickpittas.aftereffectsmcpextended.chat" Version="1.10.4" />
     </ExtensionList>
     <ExecutionEnvironment>
         <HostList>

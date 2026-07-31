@@ -83,9 +83,14 @@ if (provider === "claude") {
   requireArg("-p"); requireArg("stream-json"); requireArg("--dangerously-skip-permissions");
   const projectMcp = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".agents", "mcp_config.json"), "utf8"));
   if (!projectMcp.mcpServers?.AfterEffectsMCP?.command) throw new Error("Antigravity project MCP config is invalid");
-  console.log(JSON.stringify({type:"init",conversation_id:"agy-session"}));
-  console.log(JSON.stringify({type:"step_update",step_type:"assistant_message",text:"AGY response"}));
-  console.log(JSON.stringify({type:"result"}));
+  const globalMcp = JSON.parse(fs.readFileSync(path.join(process.env.USERPROFILE, ".gemini", "config", "mcp_config.json"), "utf8"));
+  if (!globalMcp.mcpServers?.AfterEffectsMCP?.command) throw new Error("Antigravity global MCP config is invalid");
+  console.log(JSON.stringify({event:"init",conversation_id:"agy-session",init:{cwd:process.cwd(),tools:["call_mcp_tool"]}}));
+  console.log(JSON.stringify({event:"step_update",step_update:{conversation_id:"agy-session",step_index:1,state:"ACTIVE",step_type:"tool",tool_name:"call_mcp_tool",tool_info:{name:"call_mcp_tool",parameters:{ServerName:"AfterEffectsMCP",ToolName:"after-effects",Arguments:{operation:"inspect",action:"get"}}}}}));
+  console.log(JSON.stringify({event:"step_update",step_update:{conversation_id:"agy-session",step_index:1,state:"DONE",step_type:"tool",tool_name:"call_mcp_tool",tool_info:{name:"call_mcp_tool",parameters:{ServerName:"AfterEffectsMCP",ToolName:"after-effects",Arguments:{operation:"inspect",action:"get"}},output:"ok"}}}));
+  console.log(JSON.stringify({event:"step_update",step_update:{conversation_id:"agy-session",step_index:2,state:"ACTIVE",step_type:"agent_response",text_delta:"AGY response"}}));
+  console.log(JSON.stringify({event:"step_update",step_update:{conversation_id:"agy-session",step_index:2,state:"DONE",step_type:"agent_response",text_delta:""}}));
+  console.log(JSON.stringify({event:"result",result:{conversation_id:"agy-session",status:"SUCCESS",response:"AGY response"}}));
 } else if (provider === "kimi") {
   requireArg("--prompt"); requireArg("stream-json");
   const projectMcp = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".kimi-code", "mcp.json"), "utf8"));
@@ -166,6 +171,10 @@ try {
     request("send", { prompt: "Test " + provider, context: { fixture: true } });
     const result = await waitFor((value) => !value.busy && value.transcript?.some((entry) => entry.providerLabel && entry.text === expected[provider]), provider + " response");
     assert(result.transcript.some((entry) => entry.providerLabel && entry.text === expected[provider]));
+    if (provider === "agy") {
+      const aeTool = result.activityLog.find((entry) => entry.label === "After Effects");
+      assert(aeTool && aeTool.status === "completed", "AGY MCP activity was not identified as After Effects");
+    }
     if (provider === "pi") {
       const firstText = result.transcript.find((entry) => entry.providerLabel === "Pi" && entry.text === "Pi begins.");
       const secondText = result.transcript.find((entry) => entry.providerLabel === "Pi" && entry.text === "Pi response");
