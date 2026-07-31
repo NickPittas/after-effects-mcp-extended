@@ -899,9 +899,38 @@ function applyEffect(args) {
         }
         
         var effectResult;
+        var resultMessage = "Effect applied successfully";
+        var requestedEffect = String(effectMatchName || effectName || "").toLowerCase();
+        var isCameraTrackerRequest = requestedEffect.indexOf("3d camera tracker") !== -1 || requestedEffect === "track camera";
         
+        // Camera Tracker is started through AE's native Track Camera command;
+        // it cannot be inserted with Effects.addProperty like a normal effect.
+        if (isCameraTrackerRequest) {
+            if (!(layer instanceof AVLayer) || !layer.hasVideo) {
+                throw new Error("3D Camera Tracker requires a video AV layer.");
+            }
+            comp.openInViewer();
+            for (var selectionIndex = 1; selectionIndex <= comp.numLayers; selectionIndex++) {
+                comp.layer(selectionIndex).selected = false;
+            }
+            layer.selected = true;
+            var trackCameraCommandId = app.findMenuCommandId("Track Camera");
+            if (!trackCameraCommandId) trackCameraCommandId = app.findMenuCommandId("Track Camera...");
+            if (!trackCameraCommandId) {
+                throw new Error("After Effects did not expose the Track Camera command in the current workspace.");
+            }
+            app.executeCommand(trackCameraCommandId);
+            effectResult = {
+                type: "analysis",
+                name: "3D Camera Tracker",
+                command: "Track Camera",
+                commandId: trackCameraCommandId,
+                started: true
+            };
+            resultMessage = "3D Camera Tracker analysis started";
+        }
         // Apply preset if a path is provided
-        if (presetPath) {
+        else if (presetPath) {
             var presetFile = new File(presetPath);
             if (!presetFile.exists) {
                 throw new Error("Effect preset file not found: " + presetPath);
@@ -945,7 +974,7 @@ function applyEffect(args) {
         
         return JSON.stringify({
             status: "success",
-            message: "Effect applied successfully",
+            message: resultMessage,
             effect: effectResult,
             layer: {
                 name: layer.name,
@@ -1720,7 +1749,7 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.9.10",
+            version: "1.9.11",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             lastCommand: lastBridgeCommand,
@@ -4566,17 +4595,13 @@ function startCommandChecker() {
         if ($.global.__aeMcpBridgeCommandTaskId) {
             try { app.cancelTask($.global.__aeMcpBridgeCommandTaskId); } catch (_cancelOldTaskError) {}
         }
-        $.global.__aeMcpBridgeTick = function () {
-            try { checkForCommands(); }
-            catch (error) {
-                isChecking = false;
-                logToPanel("Bridge timer error: " + error.toString());
-                writeBridgeHeartbeat("error");
-            }
-        };
-        $.global.__aeMcpBridgeCommandTaskId = app.scheduleTask("$.global.__aeMcpBridgeTick()", checkInterval, true);
+        // AE evaluates scheduled strings in its scripting scope. Calling the
+        // top-level function directly works reliably there; routing through a
+        // property on $.global can create a valid task ID that never fires.
+        $.global.__aeMcpBridgeCommandTaskId = app.scheduleTask("checkForCommands()", checkInterval, true);
         checkForCommands();
     } catch (error) {
+        isChecking = false;
         logToPanel("Unable to start bridge timer: " + error.toString());
         writeBridgeHeartbeat("error");
     }

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.8.0"
+  version: "1.9.11"
 });
 
 // ES Modules replacement for __dirname
