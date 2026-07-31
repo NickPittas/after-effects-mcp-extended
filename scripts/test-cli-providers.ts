@@ -88,6 +88,10 @@ assert.match(chatStyles, /\.tool-group-header/);
 assert.match(chatStyles, /font-variant-numeric: tabular-nums/);
 assert.match(piExtension, /ae_bridge_status\.json/);
 
+const harnessPrompt = fs.readFileSync("src/ae-harness-prompt.ts", "utf8");
+assert.match(harnessPrompt, /ServerName.*AfterEffectsMCP/);
+assert.match(harnessPrompt, /ToolName.*after-effects/);
+
 const bridgePanel = fs.readFileSync("src/scripts/mcp-bridge-auto.jsx", "utf8");
 assert.match(bridgePanel, /__aeMcpBridgeScheduledTick = scheduledBridgeTick/);
 assert.match(bridgePanel, /panel\.onActivate/);
@@ -102,12 +106,15 @@ const cepInstaller = fs.readFileSync("install-cep.ps1", "utf8");
 assert.match(cepInstaller, /after-effects-mcp-extended\.exe/);
 
 assert.equal(normalizeProviderLine("claude", JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } } }))[0].text, "Hi");
-const agyInit = normalizeProviderLine("agy", JSON.stringify({ type: "init", conversation_id: "agy-session" }));
+const agyInit = normalizeProviderLine("agy", JSON.stringify({ event: "init", conversation_id: "agy-session", init: { cwd: "C:\\Temp" } }));
 assert.equal(agyInit[0].sessionId, "agy-session");
-assert.equal(normalizeProviderLine("agy", JSON.stringify({ type: "step_update", step_type: "assistant_message", text: "Hello" }))[0].kind, "textBlock");
-const agyTool = normalizeProviderLine("agy", JSON.stringify({ type: "step_update", step_type: "tool", step_id: "agy-tool", tool_info: { name: "AfterEffectsMCP", parameters: { operation: "inspect" }, output: { ok: true } } }));
-assert.deepEqual(agyTool.map((event) => event.kind), ["toolStart", "toolEnd"]);
-assert.equal(normalizeProviderLine("agy", JSON.stringify({ type: "result", result: "Done" }))[0].kind, "finalText");
+assert.equal(normalizeProviderLine("agy", JSON.stringify({ event: "step_update", step_update: { conversation_id: "agy-session", step_index: 2, state: "ACTIVE", step_type: "agent_response", text_delta: "Hello" } }))[1].kind, "textDelta");
+const agyToolStart = normalizeProviderLine("agy", JSON.stringify({ event: "step_update", step_update: { conversation_id: "agy-session", step_index: 3, state: "ACTIVE", step_type: "tool", tool_name: "call_mcp_tool", tool_info: { name: "call_mcp_tool", parameters: { server: "AfterEffectsMCP" } } } }));
+const agyToolEnd = normalizeProviderLine("agy", JSON.stringify({ event: "step_update", step_update: { conversation_id: "agy-session", step_index: 3, state: "DONE", step_type: "tool", tool_name: "call_mcp_tool", tool_info: { name: "call_mcp_tool", parameters: { server: "AfterEffectsMCP" }, output: "ok" } } }));
+assert.equal(agyToolStart.at(-1)?.kind, "toolStart");
+assert.equal(agyToolEnd.at(-1)?.kind, "toolEnd");
+const agyResult = normalizeProviderLine("agy", JSON.stringify({ event: "result", result: { conversation_id: "agy-session", status: "SUCCESS", response: "Done" } }));
+assert.equal(agyResult.find((event) => event.kind === "finalText")?.text, "Done");
 assert.equal(normalizeProviderLine("kimi", JSON.stringify({ role: "assistant", content: "Kimi" }))[0].kind, "textBlock");
 assert.equal(normalizeProviderLine("pi", JSON.stringify({ type: "session", id: "pi-session" }))[0].sessionId, "pi-session");
 assert.equal(normalizeProviderLine("opencode", JSON.stringify({ type: "text", sessionID: "oc-session", part: { text: "Open" } })).at(-1)?.kind, "textBlock");

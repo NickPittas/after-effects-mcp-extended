@@ -11,7 +11,7 @@ import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE } from "./ae-har
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.10.3"
+  version: "1.10.4"
 }, {
   instructions: AE_HARNESS_SYSTEM_PROMPT
 });
