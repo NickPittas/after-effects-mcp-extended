@@ -96,10 +96,15 @@ export default function (pi: ExtensionAPI) {
     description: `Inspect or control the open Adobe After Effects project through the local bridge. Valid operation/action pairs: ${actionContract}. Composition creation is composition/create, never composition/add.`,
     promptSnippet: "Inspect, create, animate, mask, apply effects, manage project media, render, or capture frames in After Effects.",
     promptGuidelines: [
+      "You are embedded in the user's live Adobe After Effects project through this tool. Treat this tool schema as authoritative.",
       "Use after_effects for After Effects work instead of guessing project state or manipulating AE files directly.",
+      "Never inspect MCP or bridge source files or run shell commands to discover capabilities. If uncertain, call inspect/get with parameters {scope:'capabilities'}.",
       "Prefer an inspect operation before edits when layer, composition, or property selectors are uncertain.",
       "Use operation=composition and action=create to create a composition; action=add is invalid for compositions.",
       "For composition/create, pass name, width, height, pixelAspect, duration, and frameRate in parameters. Omitted values default to Composition, 1920, 1080, 1, 10 seconds, and 25 fps.",
+      "Use the native object requested. A requested vector shape must use shape/add; never substitute a solid because you are unsure of the shape parameters.",
+      'For a centered 400px red vector square in an HD comp, use shape/add parameters like {"compName":"Harness Test","createLayer":{"name":"Red Square","position":[960,540]},"items":[{"type":"group","name":"Red Square","items":[{"type":"rectangle","name":"Rectangle Path","size":[400,400],"position":[0,0]},{"type":"fill","name":"Red Fill","color":[1,0,0],"opacity":100}]}]}.',
+      "Verify changes by inspecting the resulting AE objects. Only claim visual verification when an actual Viewer or UI image was attached or captured and viewed.",
       `Only use these operation/action pairs: ${actionContract}.`,
     ],
     parameters: Type.Object({

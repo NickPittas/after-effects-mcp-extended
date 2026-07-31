@@ -65,8 +65,13 @@ if (args.includes("--help")) {
 if (provider === "claude" && args[0] === "auth") { console.log('{"loggedIn":true,"email":"claude@test"}'); process.exit(0); }
 if (provider === "opencode" && args[0] === "auth") { console.log("anthropic api - 1 credentials"); process.exit(0); }
 if (args[0] === "mcp") { console.log("AfterEffectsMCP ready"); process.exit(0); }
+const aePrompt = fs.readFileSync(path.join(process.cwd(), "after-effects-system-prompt.md"), "utf8");
+if (!aePrompt.includes("You are embedded in Adobe After Effects") || !aePrompt.includes("shape/add")) throw new Error("Shared After Effects system prompt is incomplete");
+for (const instructionFile of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
+  if (fs.readFileSync(path.join(process.cwd(), instructionFile), "utf8") !== aePrompt) throw new Error(instructionFile + " does not match the shared After Effects prompt");
+}
 if (provider === "claude") {
-  requireArg("-p"); requireArg("stream-json"); requireArg("--mcp-config"); requireArg("--dangerously-skip-permissions");
+  requireArg("-p"); requireArg("stream-json"); requireArg("--mcp-config"); requireArg("--dangerously-skip-permissions"); requireArg("--append-system-prompt-file");
   let stdin = "";
   for await (const chunk of process.stdin) stdin += String(chunk);
   if (!stdin.includes("Test claude")) throw new Error("Claude prompt was not delivered through stdin");
@@ -85,7 +90,7 @@ if (provider === "claude") {
   if (!projectMcp.mcpServers?.AfterEffectsMCP?.command) throw new Error("Kimi Code project MCP config is invalid");
   console.log(JSON.stringify({role:"assistant",content:"Kimi response"}));
 } else if (provider === "pi") {
-  requireArg("--print"); requireArg("--mode"); requireArg("json"); requireArg("--session-dir"); requireArg("--extension");
+  requireArg("--print"); requireArg("--mode"); requireArg("json"); requireArg("--session-dir"); requireArg("--extension"); requireArg("--append-system-prompt");
   console.log(JSON.stringify({type:"session",id:"pi-session"}));
   console.log(JSON.stringify({type:"message_update",assistantMessageEvent:{type:"text_delta",delta:"Pi response"}}));
   console.log(JSON.stringify({type:"agent_end"}));
@@ -94,6 +99,7 @@ if (provider === "claude") {
   requireArg("--");
   const opencodeConfig = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT || "{}");
   if (!opencodeConfig.mcp?.AfterEffectsMCP?.command) throw new Error("Stable OpenCode MCP config is invalid");
+  if (!Array.isArray(opencodeConfig.instructions) || !opencodeConfig.instructions[0]?.endsWith("after-effects-system-prompt.md")) throw new Error("OpenCode system instructions are missing");
   const separator = args.indexOf("--");
   const prompt = args.slice(separator + 1).join(" ");
   if (/opencode-prompt-\d+\.txt/i.test(args.slice(0, separator).join(" "))) throw new Error("OpenCode prompt was incorrectly attached as a file");
@@ -111,7 +117,7 @@ for (const provider of ["claude", "gemini", "kimi", "pi", "opencode"]) {
   fs.writeFileSync(path.join(fakeBin, provider + ".cmd"), `@echo off\r\n"${nodePath}" "${fakeRunner}" ${provider} %*\r\n`, "utf8");
 }
 
-fs.writeFileSync(path.join(chatDir, "settings.json"), JSON.stringify({ version: "1.10.0", provider: "claude", noApprovalPrompts: true, trustAfterEffectsMcp: true }));
+fs.writeFileSync(path.join(chatDir, "settings.json"), JSON.stringify({ version: "1.10.1", provider: "claude", noApprovalPrompts: true, trustAfterEffectsMcp: true }));
 
 const env = {
   ...process.env,

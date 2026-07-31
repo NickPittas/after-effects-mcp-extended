@@ -1752,7 +1752,7 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.10.0",
+            version: "1.10.1",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             instanceId: bridgeInstanceId,
@@ -2494,6 +2494,44 @@ function aeProjectItemIndex(target) {
 
 function aeInspect(args) {
     var scope = args.scope || "composition";
+    if (scope === "capabilities") {
+        return {
+            bridgeVersion: "1.10.1",
+            command: "aeCommand",
+            operations: {
+                inspect: ["get"],
+                property: ["get", "set", "expression"],
+                keyframe: ["get", "set", "update", "remove", "clear"],
+                effect: ["get", "add", "update", "remove", "move"],
+                mask: ["get", "add", "set", "update", "remove"],
+                shape: ["get", "add", "set", "update", "remove", "move", "duplicate"],
+                text: ["get", "add", "set", "update"],
+                layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
+                composition: ["get", "create", "update", "duplicate", "remove"],
+                project: ["get", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
+                render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
+                frame: ["copy", "capture"]
+            },
+            examples: {
+                redVectorSquare: {
+                    operation: "shape",
+                    action: "add",
+                    parameters: {
+                        compName: "Harness Test",
+                        createLayer: { name: "Red Square", position: [960, 540] },
+                        items: [{
+                            type: "group",
+                            name: "Red Square",
+                            items: [
+                                { type: "rectangle", name: "Rectangle Path", size: [400, 400], position: [0, 0] },
+                                { type: "fill", name: "Red Fill", color: [1, 0, 0], opacity: 100 }
+                            ]
+                        }]
+                    }
+                }
+            }
+        };
+    }
     if (scope === "project") {
         var projectResult = {
             name: app.project.file ? app.project.file.name : "Untitled Project",
@@ -3012,7 +3050,7 @@ function aeShapeCommand(args) {
         for (var i = 0; i < specifications.length; i++) {
             var addition = aeAddShapeItem(container, specifications[i]);
             additions.push({
-                item: aeSerializeProperty(addition.item, 0, args.depth === undefined ? 4 : args.depth, true),
+                item: aeSerializeProperty(addition.item, 0, args.depth === undefined ? 2 : args.depth, true),
                 changedProperties: addition.changedProperties,
                 children: addition.children
             });

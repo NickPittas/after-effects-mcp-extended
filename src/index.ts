@@ -6,11 +6,14 @@ import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
 import { fileURLToPath } from 'url';
+import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE } from "./ae-harness-prompt.js";
 
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.10.0"
+  version: "1.10.1"
+}, {
+  instructions: AE_HARNESS_SYSTEM_PROMPT
 });
 
 // Keep legacy implementations available as internal reference code without
@@ -1058,7 +1061,7 @@ const afterEffectsActionContract = Object.entries(afterEffectsOperationActions)
 
 server.tool(
   "after-effects",
-  `General After Effects control surface. Exact actions by operation: ${afterEffectsActionContract}. Composition creation uses action=create, never add.`,
+  `General After Effects control surface. Exact actions by operation: ${afterEffectsActionContract}. Composition creation uses action=create, never add. ${AE_OPERATION_PARAMETER_GUIDE}`,
   {
     operation: z.enum([
       "inspect",
@@ -1076,7 +1079,7 @@ server.tool(
     ]).describe("Capability area to use."),
     action: z.string().describe("Action permitted for the chosen operation. Composition uses create for creation; add is invalid for composition. Valid pairs are listed in the tool description."),
     parameters: z.record(z.string(), z.unknown()).optional().describe(
-      "Operation-specific parameters. Select compositions with compId, compIndex, or compName; layers with layerIndex or layerName; project items with itemIndex, itemId, or itemName; properties with propertyPath arrays of names, match names, or 1-based indexes. composition/create accepts name, width, height, pixelAspect, duration, and frameRate; omitted creation values default to Composition, 1920x1080, square pixels, 10 seconds, and 25 fps."
+      `Operation-specific parameters. Select compositions with compId, compIndex, or compName; layers with layerIndex or layerName; project items with itemIndex, itemId, or itemName; properties with propertyPath arrays of names, match names, or 1-based indexes. composition/create accepts name, width, height, pixelAspect, duration, and frameRate; omitted creation values default to Composition, 1920x1080, square pixels, 10 seconds, and 25 fps. ${AE_OPERATION_PARAMETER_GUIDE}`
     )
   },
   async ({ operation, action, parameters = {} }) => {
