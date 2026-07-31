@@ -26,6 +26,7 @@ type TranscriptEntry = {
   role: TranscriptRole;
   text: string;
   time: string;
+  sequence?: number;
   attachments?: Array<{ kind: "viewer" | "aeUi"; label: string; path: string }>;
   providerLabel?: string;
 };
@@ -37,6 +38,7 @@ type ActivityEvent = {
   detail: string;
   status: "running" | "completed" | "failed";
   time: string;
+  sequence?: number;
 };
 
 type PendingApproval = {
@@ -92,7 +94,7 @@ type ChatRequest = {
   providerId?: CliProviderId;
 };
 
-const VERSION = "1.10.1";
+const VERSION = "1.10.2";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -149,6 +151,26 @@ try {
   if (Array.isArray(previousState.activityLog)) state.activityLog = previousState.activityLog.slice(-120);
 } catch {}
 
+let timelineSequence = Math.max(0, ...state.transcript.map((entry) => Number(entry.sequence) || 0), ...state.activityLog.map((event) => Number(event.sequence) || 0));
+
+function nextTimelineSequence(): number {
+  timelineSequence += 1;
+  return timelineSequence;
+}
+
+function createAssistantEntry(providerLabel = state.providerName): TranscriptEntry {
+  const entry: TranscriptEntry = {
+    id: `${Date.now()}-assistant-${Math.random().toString(16).slice(2)}`,
+    role: "assistant",
+    text: "",
+    time: new Date().toISOString(),
+    sequence: nextTimelineSequence(),
+    providerLabel,
+  };
+  state.transcript.push(entry);
+  return entry;
+}
+
 function logHostError(context: string, error: unknown): void {
   try {
     fs.appendFileSync(LOG_PATH, `[${new Date().toISOString()}] ${context}: ${String(error)}\n`, "utf8");
@@ -193,6 +215,7 @@ function appendTranscript(
     role,
     text,
     time: new Date().toISOString(),
+    sequence: nextTimelineSequence(),
     attachments: attachments?.length ? attachments : undefined,
     providerLabel: role === "assistant" ? state.providerName : undefined,
   });
@@ -249,6 +272,7 @@ function addActivityEvent(item: any): void {
     detail: detail.slice(0, 500),
     status: "running",
     time: new Date().toISOString(),
+    sequence: nextTimelineSequence(),
   });
   if (state.activityLog.length > 120) state.activityLog = state.activityLog.slice(-120);
 }
@@ -783,13 +807,9 @@ class AppServerClient {
     }
     appendTranscript("user", prompt, attachments);
 
-    this.assistantEntry = {
-      id: `${Date.now()}-assistant`,
-      role: "assistant",
-      text: "",
-      time: new Date().toISOString(),
-    };
-    state.transcript.push(this.assistantEntry);
+    // Do not create a response bubble until text actually arrives. Tool calls
+    // may happen first, and a turn may contain several text/tool/text segments.
+    this.assistantEntry = null;
     state.busy = true;
     state.statusText = "Codex is working...";
     state.activity = { kind: "thinking", label: "Thinking" };
@@ -969,6 +989,9 @@ class AppServerClient {
       state.activity = { kind: "thinking", label: "Thinking" };
     } else if (message.method === "item/started") {
       const item = params.item || {};
+      // Each app-server item is a distinct point in the visible chat timeline.
+      // End the current text segment before a tool or a new agent-message item.
+      this.assistantEntry = null;
       addActivityEvent(item);
       if (item.type === "mcpToolCall") {
         const isAe = String(item.server || "").toLowerCase() === "aftereffectsmcp";
@@ -989,15 +1012,18 @@ class AppServerClient {
       }
     } else if (message.method === "item/agentMessage/delta") {
       if (!this.assistantEntry) {
-        this.assistantEntry = { id: `${Date.now()}-assistant`, role: "assistant", text: "", time: new Date().toISOString() };
-        state.transcript.push(this.assistantEntry);
+        this.assistantEntry = createAssistantEntry("Codex");
       }
       this.assistantEntry.text += params.delta || "";
       state.statusText = "Codex is responding...";
       state.activity = { kind: "responding", label: "Responding" };
     } else if (message.method === "item/completed" && params.item?.type === "agentMessage") {
       const finalText = params.item.text || params.item.content || "";
-      if (this.assistantEntry && finalText) this.assistantEntry.text = typeof finalText === "string" ? finalText : JSON.stringify(finalText);
+      if (finalText) {
+        if (!this.assistantEntry) this.assistantEntry = createAssistantEntry("Codex");
+        this.assistantEntry.text = typeof finalText === "string" ? finalText : JSON.stringify(finalText);
+      }
+      this.assistantEntry = null;
     } else if (message.method === "item/completed" && state.busy) {
       completeActivityEvent(params.item);
       state.statusText = "Codex is thinking...";
@@ -1386,6 +1412,7 @@ async function startGenericLogin(): Promise<void> {
 class GenericCliClient {
   private child: ChildProcess | null = null;
   private assistantEntry: TranscriptEntry | null = null;
+  private hasStreamedText = false;
   private activityIds = new Set<string>();
   private providerError: string | null = null;
 
@@ -1396,6 +1423,7 @@ class GenericCliClient {
     const prompt = (request.prompt || "").trim();
     if (!prompt) throw new Error("Enter a message first.");
     this.providerError = null;
+    this.hasStreamedText = false;
 
     const attachments: Array<{ kind: "viewer" | "aeUi"; label: string; path: string }> = [];
     const attachmentPaths: string[] = [];
@@ -1446,10 +1474,9 @@ class GenericCliClient {
       kimiFlavor,
     });
 
-    this.assistantEntry = {
-      id: `${Date.now()}-assistant`, role: "assistant", text: "", time: new Date().toISOString(), providerLabel: state.providerName,
-    };
-    state.transcript.push(this.assistantEntry);
+    // Delay the first assistant bubble until text arrives. This allows tools
+    // that run before the response to appear before it in the chat timeline.
+    this.assistantEntry = null;
     this.activityIds.clear();
     state.busy = true;
     state.activeTurnId = `${provider}-${Date.now()}`;
@@ -1483,13 +1510,20 @@ class GenericCliClient {
       if (event.kind === "session" && event.sessionId) {
         providerSessions[provider] = event.sessionId;
         saveSettings();
-      } else if ((event.kind === "textDelta" || event.kind === "finalText") && event.text) {
-        if (!this.assistantEntry) continue;
-        if (event.kind === "finalText") this.assistantEntry.text = event.text;
-        else this.assistantEntry.text += event.text;
+      } else if ((event.kind === "textDelta" || event.kind === "textBlock" || event.kind === "finalText") && event.text) {
+        if (event.kind === "finalText" && this.hasStreamedText) continue;
+        if (event.kind === "textBlock") this.assistantEntry = null;
+        if (!this.assistantEntry) this.assistantEntry = createAssistantEntry(state.providerName);
+        if (event.kind === "finalText" || event.kind === "textBlock") this.assistantEntry.text = event.text;
+        else {
+          this.assistantEntry.text += event.text;
+        }
+        this.hasStreamedText = true;
         state.statusText = `${state.providerName} is responding...`;
         state.activity = { kind: "responding", label: "Responding" };
       } else if (event.kind === "toolStart") {
+        // The next text belongs in a new bubble after this tool activity.
+        this.assistantEntry = null;
         const name = event.toolName || "Tool";
         const isAe = /after.?effects|aftereffectsmcp/i.test(name);
         const activityId = event.toolId || `${Date.now()}-tool`;
@@ -1498,6 +1532,7 @@ class GenericCliClient {
           id: activityId, kind: isAe ? "afterEffects" : "tool",
           label: isAe ? "After Effects" : name, detail: (event.toolDetail || "Using tool").slice(0, 500),
           status: "running", time: new Date().toISOString(),
+          sequence: nextTimelineSequence(),
         });
         state.statusText = isAe ? `${state.providerName} is using After Effects...` : `${state.providerName} is using ${name}...`;
         state.activity = { kind: isAe ? "afterEffects" : "tool", label: isAe ? "Using After Effects" : `Using ${name}` };
@@ -1533,10 +1568,8 @@ class GenericCliClient {
     this.child = null;
     state.busy = false;
     state.activeTurnId = null;
-    if (this.assistantEntry && !this.assistantEntry.text) {
-      state.transcript = state.transcript.filter((entry) => entry !== this.assistantEntry);
-    }
     this.assistantEntry = null;
+    this.hasStreamedText = false;
     this.providerError = null;
     for (const activity of state.activityLog) {
       if (this.activityIds.has(activity.id) && activity.status === "running") activity.status = success ? "completed" : "failed";

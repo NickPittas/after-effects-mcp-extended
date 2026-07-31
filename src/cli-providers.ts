@@ -44,7 +44,7 @@ export type ProviderRunSpec = {
 export type KimiCliFlavor = "kimi-code" | "kimi-cli";
 
 export type NormalizedProviderEvent = {
-  kind: "textDelta" | "finalText" | "toolStart" | "toolEnd" | "error" | "complete" | "session";
+  kind: "textDelta" | "textBlock" | "finalText" | "toolStart" | "toolEnd" | "error" | "complete" | "session";
   text?: string;
   sessionId?: string;
   toolId?: string;
@@ -525,7 +525,7 @@ export function normalizeProviderLine(provider: CliProviderId, line: string): No
     const sessionId = message.session_id || message.sessionId;
     if (sessionId) events.push({ kind: "session", sessionId: String(sessionId) });
     if (message.type === "message" && String(message.role || "").toLowerCase() === "assistant") {
-      events.push({ kind: "textDelta", text: String(message.content || message.text || "") });
+      events.push({ kind: "textBlock", text: String(message.content || message.text || "") });
     } else if (message.type === "tool_use") {
       events.push({ kind: "toolStart", toolId: String(message.tool_id || message.id || ""), toolName: String(message.tool_name || message.name || "Tool"), toolDetail: JSON.stringify(message.parameters || message.args || {}) });
     } else if (message.type === "tool_result") {
@@ -542,7 +542,7 @@ export function normalizeProviderLine(provider: CliProviderId, line: string): No
     if (message.session_id || message.sessionId) events.push({ kind: "session", sessionId: String(message.session_id || message.sessionId) });
     if (message.role === "assistant") {
       const text = textFromContent(message.content);
-      if (text) events.push({ kind: "textDelta", text });
+      if (text) events.push({ kind: "textBlock", text });
       for (const toolCall of message.tool_calls || []) {
         events.push({ kind: "toolStart", toolId: String(toolCall.id || ""), toolName: String(toolCall.function?.name || toolCall.name || "Tool"), toolDetail: String(toolCall.function?.arguments || "") });
       }
@@ -574,7 +574,7 @@ export function normalizeProviderLine(provider: CliProviderId, line: string): No
     if (message.sessionID) events.push({ kind: "session", sessionId: String(message.sessionID) });
     if (message.type === "text") {
       const text = String(message.part?.text || "");
-      if (text) events.push({ kind: "textDelta", text });
+      if (text) events.push({ kind: "textBlock", text });
     } else if (message.type === "tool_use") {
       const part = message.part || {};
       events.push({ kind: "toolStart", toolId: String(part.id || ""), toolName: String(part.tool || "Tool"), toolDetail: JSON.stringify(part.state?.input || {}) });

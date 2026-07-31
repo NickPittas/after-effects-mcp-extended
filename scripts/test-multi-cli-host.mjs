@@ -92,6 +92,9 @@ if (provider === "claude") {
 } else if (provider === "pi") {
   requireArg("--print"); requireArg("--mode"); requireArg("json"); requireArg("--session-dir"); requireArg("--extension"); requireArg("--append-system-prompt");
   console.log(JSON.stringify({type:"session",id:"pi-session"}));
+  console.log(JSON.stringify({type:"message_update",assistantMessageEvent:{type:"text_delta",delta:"Pi begins."}}));
+  console.log(JSON.stringify({type:"tool_execution_start",toolCallId:"pi-timeline-tool",toolName:"after_effects",args:{operation:"inspect",action:"get"}}));
+  console.log(JSON.stringify({type:"tool_execution_end",toolCallId:"pi-timeline-tool",toolName:"after_effects",isError:false}));
   console.log(JSON.stringify({type:"message_update",assistantMessageEvent:{type:"text_delta",delta:"Pi response"}}));
   console.log(JSON.stringify({type:"agent_end"}));
 } else if (provider === "opencode") {
@@ -117,7 +120,7 @@ for (const provider of ["claude", "gemini", "kimi", "pi", "opencode"]) {
   fs.writeFileSync(path.join(fakeBin, provider + ".cmd"), `@echo off\r\n"${nodePath}" "${fakeRunner}" ${provider} %*\r\n`, "utf8");
 }
 
-fs.writeFileSync(path.join(chatDir, "settings.json"), JSON.stringify({ version: "1.10.1", provider: "claude", noApprovalPrompts: true, trustAfterEffectsMcp: true }));
+fs.writeFileSync(path.join(chatDir, "settings.json"), JSON.stringify({ version: "1.10.2", provider: "claude", noApprovalPrompts: true, trustAfterEffectsMcp: true }));
 
 const env = {
   ...process.env,
@@ -160,6 +163,13 @@ try {
     request("send", { prompt: "Test " + provider, context: { fixture: true } });
     const result = await waitFor((value) => !value.busy && value.transcript?.some((entry) => entry.providerLabel && entry.text === expected[provider]), provider + " response");
     assert(result.transcript.some((entry) => entry.providerLabel && entry.text === expected[provider]));
+    if (provider === "pi") {
+      const firstText = result.transcript.find((entry) => entry.providerLabel === "Pi" && entry.text === "Pi begins.");
+      const secondText = result.transcript.find((entry) => entry.providerLabel === "Pi" && entry.text === "Pi response");
+      const tool = result.activityLog.find((entry) => entry.id === "pi-timeline-tool");
+      assert(firstText && tool && secondText, "Pi text/tool/text timeline entries were not preserved");
+      assert(firstText.sequence < tool.sequence && tool.sequence < secondText.sequence, "Pi timeline order is not text, tool, text");
+    }
   }
   request("send", { prompt: "STOP_FIXTURE" });
   await waitFor((value) => value.provider === "opencode" && value.busy, "long-running OpenCode fixture");

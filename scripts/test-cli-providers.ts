@@ -76,6 +76,14 @@ assert.match(piExtension, /inspect\/get with parameters \{scope:'capabilities'\}
 assert.match(piExtension, /never substitute a solid/);
 assert.match(piExtension, /Unsupported action/);
 assert.match(piExtension, /ae_command\.lock/);
+
+const chatRenderer = fs.readFileSync("cep/main.js", "utf8");
+assert.match(chatRenderer, /function compareTimelineItems/);
+assert.match(chatRenderer, /function createToolGroup/);
+assert.match(chatRenderer, /state\.activity\.kind === "responding"/);
+const chatStyles = fs.readFileSync("cep/styles.css", "utf8");
+assert.match(chatStyles, /\.tool-group-header/);
+assert.match(chatStyles, /font-variant-numeric: tabular-nums/);
 assert.match(piExtension, /ae_bridge_status\.json/);
 
 const bridgePanel = fs.readFileSync("src/scripts/mcp-bridge-auto.jsx", "utf8");
@@ -92,10 +100,10 @@ const cepInstaller = fs.readFileSync("install-cep.ps1", "utf8");
 assert.match(cepInstaller, /after-effects-mcp-extended\.exe/);
 
 assert.equal(normalizeProviderLine("claude", JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } } }))[0].text, "Hi");
-assert.equal(normalizeProviderLine("gemini", JSON.stringify({ type: "message", role: "assistant", content: "Hello" }))[0].text, "Hello");
-assert.equal(normalizeProviderLine("kimi", JSON.stringify({ role: "assistant", content: "Kimi" }))[0].text, "Kimi");
+assert.equal(normalizeProviderLine("gemini", JSON.stringify({ type: "message", role: "assistant", content: "Hello" }))[0].kind, "textBlock");
+assert.equal(normalizeProviderLine("kimi", JSON.stringify({ role: "assistant", content: "Kimi" }))[0].kind, "textBlock");
 assert.equal(normalizeProviderLine("pi", JSON.stringify({ type: "session", id: "pi-session" }))[0].sessionId, "pi-session");
-assert.equal(normalizeProviderLine("opencode", JSON.stringify({ type: "text", sessionID: "oc-session", part: { text: "Open" } })).at(-1)?.text, "Open");
+assert.equal(normalizeProviderLine("opencode", JSON.stringify({ type: "text", sessionID: "oc-session", part: { text: "Open" } })).at(-1)?.kind, "textBlock");
 
 if (process.platform === "win32") {
   const npmPath = "C:\\Program Files\\nodejs\\npm.cmd";
