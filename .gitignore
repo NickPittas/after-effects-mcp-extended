@@ -7,6 +7,8 @@ yarn-debug.log
 # Build directories
 build/
 dist/
+release/
+installer/windows/.stage/
 
 # IDEs and editors
 .vscode/

@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>After Effects MCP Chat</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main class="app-shell" id="appShell">
+    <header class="app-header">
+      <div class="brand-row">
+        <div class="brand-mark" aria-hidden="true">Ae</div>
+        <div class="brand-copy">
+          <strong>AE MCP Chat</strong>
+          <span class="connection-line"><i id="statusDot" class="status-dot"></i><span id="statusText">Starting companion…</span></span>
+        </div>
+        <button class="icon-button account-button" id="accountButton" type="button" title="Codex account" aria-label="Codex account">
+          <span id="accountInitials">?</span>
+        </button>
+      </div>
+      <div class="toolbar-row">
+        <button class="toolbar-button" id="toolsToggle" type="button" aria-pressed="false">
+          <span>Tools</span><b class="count-badge" id="toolsCount">0</b>
+        </button>
+        <button class="toolbar-button" id="clearButton" type="button" title="Clear conversation">Clear</button>
+        <span class="toolbar-spacer"></span>
+        <button class="toolbar-button" id="optionsButton" type="button" aria-expanded="false">Options</button>
+      </div>
+
+      <section class="popover account-popover" id="accountPopover" hidden>
+        <div class="popover-label">Codex account</div>
+        <strong id="accountName">Checking…</strong>
+        <span id="accountPlan"></span>
+        <button class="secondary-button" id="switchAccountButton" type="button">Switch account</button>
+      </section>
+
+      <section class="popover options-popover" id="optionsPopover" hidden>
+        <label class="toggle-row"><span><b>Viewer</b><small>Attach the current composition frame</small></span><input id="attachViewer" type="checkbox" checked><i></i></label>
+        <label class="toggle-row"><span><b>AE UI</b><small>Attach the complete After Effects window</small></span><input id="attachAeUi" type="checkbox"><i></i></label>
+        <label class="toggle-row"><span><b>Autonomous</b><small>Run without permission prompts</small></span><input id="autonomousMode" type="checkbox" checked><i></i></label>
+      </section>
+    </header>
+
+    <section class="conversation-wrap">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-mark">✦</div>
+        <strong>Ready for After Effects</strong>
+        <span>Ask Codex to create, inspect, animate, or render.</span>
+      </div>
+      <div class="conversation" id="conversation" role="log" aria-live="polite"></div>
+      <button class="jump-latest" id="jumpLatest" type="button" hidden>↓ Jump to latest</button>
+    </section>
+
+    <section class="activity-strip" id="activityStrip" data-kind="idle">
+      <div class="activity-icon" id="activityIcon"><span></span><span></span><span></span></div>
+      <div class="activity-copy"><strong id="activityLabel">Ready</strong><small id="activityDetail">Waiting for a request</small></div>
+      <button class="stop-icon" id="stopButton" type="button" title="Stop Codex" disabled>■</button>
+    </section>
+
+    <footer class="composer-shell">
+      <div class="composer">
+        <textarea id="promptInput" rows="1" placeholder="Ask Codex to work in After Effects…" aria-label="Message Codex"></textarea>
+        <div class="composer-actions">
+          <div class="attachment-state" id="attachmentState"></div>
+          <span class="shortcut-hint">Shift+Enter for new line</span>
+          <button class="send-button" id="sendButton" type="button" title="Send">➤</button>
+        </div>
+      </div>
+    </footer>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+    <div class="lightbox" id="lightbox" hidden>
+      <button id="closeLightbox" type="button" aria-label="Close preview">×</button>
+      <img id="lightboxImage" alt="Attachment preview">
+      <span id="lightboxLabel"></span>
+    </div>
+  </main>
+  <script src="main.js"></script>
+</body>
+</html>
