@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>After Effects MCP Chat</title>
+  <title>After Effects CLI Chat</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -12,10 +12,18 @@
       <div class="brand-row">
         <div class="brand-mark" aria-hidden="true">Ae</div>
         <div class="brand-copy">
-          <strong>AE MCP Chat</strong>
+          <strong>AE CLI Chat</strong>
           <span class="connection-line"><i id="statusDot" class="status-dot"></i><span id="statusText">Starting companion…</span></span>
         </div>
-        <button class="icon-button account-button" id="accountButton" type="button" title="Codex account" aria-label="Codex account">
+        <select class="provider-select" id="providerSelect" title="Choose CLI tool" aria-label="Choose CLI tool">
+          <option value="codex">Codex</option>
+          <option value="claude">Claude Code</option>
+          <option value="gemini">Gemini CLI</option>
+          <option value="kimi">Kimi CLI</option>
+          <option value="pi">Pi</option>
+          <option value="opencode">OpenCode</option>
+        </select>
+        <button class="icon-button account-button" id="accountButton" type="button" title="CLI account" aria-label="CLI account">
           <span id="accountInitials">?</span>
         </button>
       </div>
@@ -29,16 +37,20 @@
       </div>
 
       <section class="popover account-popover" id="accountPopover" hidden>
-        <div class="popover-label">Codex account</div>
+        <div class="popover-label" id="accountProvider">CLI account</div>
         <strong id="accountName">Checking…</strong>
         <span id="accountPlan"></span>
         <button class="secondary-button" id="switchAccountButton" type="button">Switch account</button>
+        <button class="secondary-button" id="installProviderButton" type="button" hidden>Install CLI</button>
+        <button class="secondary-button quiet" id="refreshProviderButton" type="button">Refresh status</button>
+        <button class="secondary-button quiet" id="providerDocsButton" type="button">Official instructions</button>
       </section>
 
       <section class="popover options-popover" id="optionsPopover" hidden>
         <label class="toggle-row"><span><b>Viewer</b><small>Attach the current composition frame</small></span><input id="attachViewer" type="checkbox" checked><i></i></label>
         <label class="toggle-row"><span><b>AE UI</b><small>Attach the complete After Effects window</small></span><input id="attachAeUi" type="checkbox"><i></i></label>
-        <label class="toggle-row"><span><b>Autonomous</b><small>Run without permission prompts</small></span><input id="autonomousMode" type="checkbox" checked><i></i></label>
+        <label class="toggle-row"><span><b>Trust AE MCP</b><small>Approve only AfterEffectsMCP tool requests automatically</small></span><input id="trustAeMcp" type="checkbox" checked><i></i></label>
+        <label class="toggle-row"><span><b>Autonomous CLI</b><small>Allow every CLI command and tool without prompts</small></span><input id="autonomousMode" type="checkbox" checked><i></i></label>
       </section>
     </header>
 
@@ -46,7 +58,7 @@
       <div class="empty-state" id="emptyState">
         <div class="empty-mark">✦</div>
         <strong>Ready for After Effects</strong>
-        <span>Ask Codex to create, inspect, animate, or render.</span>
+        <span id="emptyCopy">Ask your CLI assistant to create, inspect, animate, or render.</span>
       </div>
       <div class="conversation" id="conversation" role="log" aria-live="polite"></div>
       <button class="jump-latest" id="jumpLatest" type="button" hidden>↓ Jump to latest</button>
@@ -55,12 +67,12 @@
     <section class="activity-strip" id="activityStrip" data-kind="idle">
       <div class="activity-icon" id="activityIcon"><span></span><span></span><span></span></div>
       <div class="activity-copy"><strong id="activityLabel">Ready</strong><small id="activityDetail">Waiting for a request</small></div>
-      <button class="stop-icon" id="stopButton" type="button" title="Stop Codex" disabled>■</button>
+      <button class="stop-icon" id="stopButton" type="button" title="Stop active CLI" disabled>■</button>
     </section>
 
     <footer class="composer-shell">
       <div class="composer">
-        <textarea id="promptInput" rows="1" placeholder="Ask Codex to work in After Effects…" aria-label="Message Codex"></textarea>
+        <textarea id="promptInput" rows="1" placeholder="Ask your CLI assistant to work in After Effects…" aria-label="Message CLI assistant"></textarea>
         <div class="composer-actions">
           <div class="attachment-state" id="attachmentState"></div>
           <span class="shortcut-hint">Shift+Enter for new line</span>

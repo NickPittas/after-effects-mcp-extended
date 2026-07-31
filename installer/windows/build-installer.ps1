@@ -33,6 +33,7 @@ if (-not $SkipBuild) {
 $requiredFiles = @(
     (Join-Path $repoRoot "dist\after-effects-mcp-extended.exe"),
     (Join-Path $repoRoot "dist\after-effects-codex-chat.exe"),
+    (Join-Path $repoRoot "assets\pi-after-effects-extension.ts"),
     (Join-Path $repoRoot "build\scripts\mcp-bridge-auto.jsx"),
     (Join-Path $repoRoot "cep\CSXS\manifest.xml"),
     (Join-Path $repoRoot "cep\bin\launch-chat.vbs")
@@ -57,6 +58,7 @@ New-Item -ItemType Directory -Path $releaseRoot -Force | Out-Null
 
 Copy-Item -LiteralPath (Join-Path $repoRoot "dist\after-effects-mcp-extended.exe") -Destination (Join-Path $payloadRoot "app\after-effects-mcp-extended.exe") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "dist\after-effects-codex-chat.exe") -Destination (Join-Path $payloadRoot "app\after-effects-codex-chat.exe") -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "assets\pi-after-effects-extension.ts") -Destination (Join-Path $payloadRoot "app\pi-after-effects-extension.ts") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "cep\bin\launch-chat.vbs") -Destination (Join-Path $payloadRoot "app\launch-chat.vbs") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "build\scripts\mcp-bridge-auto.jsx") -Destination (Join-Path $payloadRoot "bridge\mcp-bridge-auto.jsx") -Force
 Copy-Item -Path (Join-Path $repoRoot "cep") -Destination $payloadRoot -Recurse -Force

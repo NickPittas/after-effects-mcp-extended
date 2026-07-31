@@ -7,11 +7,12 @@ $repoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $panelSource = Join-Path $repoRoot "build\scripts\mcp-bridge-auto.jsx"
 $mcpSource = Join-Path $repoRoot "dist\after-effects-mcp-extended.exe"
 $chatSource = Join-Path $repoRoot "dist\after-effects-codex-chat.exe"
+$piExtensionSource = Join-Path $repoRoot "assets\pi-after-effects-extension.ts"
 $cepSource = Join-Path $repoRoot "cep"
 $cepManifest = Join-Path $cepSource "CSXS\manifest.xml"
 $chatLauncher = Join-Path $cepSource "bin\launch-chat.vbs"
 
-foreach ($requiredFile in @($panelSource, $mcpSource, $chatSource, $cepManifest, $chatLauncher)) {
+foreach ($requiredFile in @($panelSource, $mcpSource, $chatSource, $piExtensionSource, $cepManifest, $chatLauncher)) {
     if (-not (Test-Path -LiteralPath $requiredFile)) {
         throw "Missing release file: $requiredFile"
     }
@@ -42,6 +43,7 @@ $appFolder = Join-Path $env:APPDATA "AfterEffectsMCP"
 New-Item -ItemType Directory -Path $appFolder -Force | Out-Null
 Copy-Item -LiteralPath $mcpSource -Destination (Join-Path $appFolder "after-effects-mcp-extended.exe") -Force
 Copy-Item -LiteralPath $chatSource -Destination (Join-Path $appFolder "after-effects-codex-chat.exe") -Force
+Copy-Item -LiteralPath $piExtensionSource -Destination (Join-Path $appFolder "pi-after-effects-extension.ts") -Force
 Copy-Item -LiteralPath $chatLauncher -Destination (Join-Path $appFolder "launch-chat.vbs") -Force
 
 $extensionId = "com.nickpittas.aftereffectsmcpextended"
@@ -85,4 +87,4 @@ Write-Host "Restart After Effects."
 Write-Host "Open Window > mcp-bridge-auto.jsx for the bridge."
 Write-Host "Open Window > Extensions > After Effects MCP Chat for the dockable chat."
 Write-Host "The CEP panel starts its companion in the correct After Effects desktop context."
-Write-Host "The chat panel can install Codex CLI without Node.js or npm."
+Write-Host "The chat panel supports Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, and OpenCode."

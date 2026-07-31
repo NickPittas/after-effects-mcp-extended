@@ -1,8 +1,22 @@
-import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess, type ChildProcessWithoutNullStreams } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
+import {
+  PROVIDERS,
+  PROVIDER_ORDER,
+  buildProviderRunSpec,
+  createStandardMcpConfig,
+  detectKimiCliFlavor,
+  inspectProvider,
+  normalizeProviderLine,
+  spawnCli,
+  spawnCliSync,
+  visibleTerminalInvocation,
+  type CliProviderId,
+  type ProviderSnapshot,
+} from "./cli-providers.js";
 
 type TranscriptRole = "user" | "assistant" | "system";
 
@@ -12,6 +26,7 @@ type TranscriptEntry = {
   text: string;
   time: string;
   attachments?: Array<{ kind: "viewer" | "aeUi"; label: string; path: string }>;
+  providerLabel?: string;
 };
 
 type ActivityEvent = {
@@ -36,11 +51,16 @@ type PendingApproval = {
 
 type ChatState = {
   version: string;
+  provider: CliProviderId;
+  providerName: string;
+  providers: ProviderSnapshot[];
   hostStatus: "starting" | "ready" | "error";
   cliStatus: "checking" | "missing" | "signedOut" | "ready" | "installing";
   cliPath: string | null;
   cliVersion: string | null;
   mcpStatus: "unknown" | "ready" | "missing";
+  bridgeStatus: "unknown" | "ready" | "paused" | "stale";
+  bridgeMessage: string | null;
   threadId: string | null;
   activeTurnId: string | null;
   busy: boolean;
@@ -68,9 +88,10 @@ type ChatRequest = {
   trustAfterEffectsMcp?: boolean;
   noApprovalPrompts?: boolean;
   decision?: "accept" | "acceptForSession" | "decline" | "cancel";
+  providerId?: CliProviderId;
 };
 
-const VERSION = "1.9.11";
+const VERSION = "1.10.0";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -78,22 +99,34 @@ const STATE_PATH = path.join(CHAT_DIR, "state.json");
 const SETTINGS_PATH = path.join(CHAT_DIR, "settings.json");
 const LOCK_PATH = path.join(CHAT_DIR, "host.lock");
 const LOG_PATH = path.join(CHAT_DIR, "host.log");
+const MCP_CONFIG_PATH = path.join(CHAT_DIR, "provider-mcp.json");
+const PI_SESSION_DIR = path.join(CHAT_DIR, "pi-sessions");
+const AE_BRIDGE_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge");
+const AE_COMMAND_PATH = path.join(AE_BRIDGE_DIR, "ae_command.json");
+const AE_RESULT_PATH = path.join(AE_BRIDGE_DIR, "ae_mcp_result.json");
+const AE_COMMAND_LOCK_PATH = path.join(AE_BRIDGE_DIR, "ae_command.lock");
+const AE_HEARTBEAT_PATH = path.join(AE_BRIDGE_DIR, "ae_bridge_status.json");
 
-for (const directory of [CHAT_DIR, REQUEST_DIR, ATTACHMENT_DIR]) {
+for (const directory of [CHAT_DIR, REQUEST_DIR, ATTACHMENT_DIR, PI_SESSION_DIR]) {
   fs.mkdirSync(directory, { recursive: true });
 }
 
 let state: ChatState = {
   version: VERSION,
+  provider: "codex",
+  providerName: PROVIDERS.codex.label,
+  providers: [],
   hostStatus: "starting",
   cliStatus: "checking",
   cliPath: null,
   cliVersion: null,
   mcpStatus: "unknown",
+  bridgeStatus: "unknown",
+  bridgeMessage: null,
   threadId: null,
   activeTurnId: null,
   busy: false,
-  statusText: "Starting Codex companion...",
+  statusText: "Starting CLI companion...",
   activity: { kind: "starting", label: "Starting" },
   activityLog: [],
   account: null,
@@ -156,6 +189,7 @@ function appendTranscript(
     text,
     time: new Date().toISOString(),
     attachments: attachments?.length ? attachments : undefined,
+    providerLabel: role === "assistant" ? state.providerName : undefined,
   });
   saveState();
 }
@@ -226,7 +260,16 @@ function completeActivityEvent(item: any): void {
   }
 }
 
-function loadSettings(): { version?: string; threadId?: string; trustAfterEffectsMcp?: boolean; noApprovalPrompts?: boolean } {
+type ChatSettings = {
+  version?: string;
+  threadId?: string;
+  provider?: CliProviderId;
+  providerSessions?: Partial<Record<CliProviderId, string>>;
+  trustAfterEffectsMcp?: boolean;
+  noApprovalPrompts?: boolean;
+};
+
+function loadSettings(): ChatSettings {
   try {
     return JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
   } catch {
@@ -238,58 +281,209 @@ function saveSettings(): void {
   writeJsonAtomic(SETTINGS_PATH, {
     version: VERSION,
     threadId: state.threadId,
+    provider: state.provider,
+    providerSessions,
     trustAfterEffectsMcp: state.trustAfterEffectsMcp,
     noApprovalPrompts: state.noApprovalPrompts,
   });
 }
 
 const savedSettings = loadSettings();
+const providerSessions: Partial<Record<CliProviderId, string>> = savedSettings.providerSessions || {};
+if (savedSettings.provider && PROVIDERS[savedSettings.provider]) {
+  state.provider = savedSettings.provider;
+  state.providerName = PROVIDERS[savedSettings.provider].label;
+}
+
+type BridgeHeartbeat = {
+  state?: string;
+  autoRun?: boolean;
+  instanceId?: string;
+  updatedAt?: number | string;
+};
+
+function readBridgeHeartbeat(): { status: ChatState["bridgeStatus"]; message: string; heartbeat: BridgeHeartbeat | null } {
+  try {
+    const heartbeat = JSON.parse(fs.readFileSync(AE_HEARTBEAT_PATH, "utf8")) as BridgeHeartbeat;
+    const updatedAt = typeof heartbeat.updatedAt === "number" ? heartbeat.updatedAt : Date.parse(String(heartbeat.updatedAt || ""));
+    const age = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Number.POSITIVE_INFINITY;
+    if (age > 4000) return { status: "stale", message: "After Effects bridge heartbeat is stale.", heartbeat };
+    if (heartbeat.autoRun === false || heartbeat.state === "paused") {
+      return { status: "paused", message: "After Effects bridge Auto-run is disabled.", heartbeat };
+    }
+    if (heartbeat.state === "ready" || heartbeat.state === "checking" || heartbeat.state === "starting") {
+      return { status: "ready", message: "After Effects bridge is ready.", heartbeat };
+    }
+    return { status: "stale", message: `After Effects bridge reported '${heartbeat.state || "unknown"}'.`, heartbeat };
+  } catch {
+    return { status: "stale", message: "After Effects bridge heartbeat was not found.", heartbeat: null };
+  }
+}
+
+function updateBridgeHealthState(): void {
+  const health = readBridgeHeartbeat();
+  state.bridgeStatus = health.status;
+  state.bridgeMessage = health.message;
+  if (!state.busy && state.cliStatus === "ready" && health.status !== "ready") {
+    state.statusText = health.status === "paused" ? "Bridge Auto-run is off" : "After Effects bridge is unavailable";
+  } else if (!state.busy && state.cliStatus === "ready" && health.status === "ready" && /bridge/i.test(state.statusText)) {
+    state.statusText = "Ready";
+  }
+}
+
+async function acquireAeBridgeLock(timeoutMs: number): Promise<() => void> {
+  fs.mkdirSync(AE_BRIDGE_DIR, { recursive: true });
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const descriptor = fs.openSync(AE_COMMAND_LOCK_PATH, "wx");
+      fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), owner: "chat-host" }));
+      fs.closeSync(descriptor);
+      return () => {
+        try {
+          const lock = JSON.parse(fs.readFileSync(AE_COMMAND_LOCK_PATH, "utf8"));
+          if (Number(lock.pid) === process.pid) fs.unlinkSync(AE_COMMAND_LOCK_PATH);
+        } catch {}
+      };
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") throw error;
+      let stale = false;
+      try {
+        const lock = JSON.parse(fs.readFileSync(AE_COMMAND_LOCK_PATH, "utf8"));
+        const ownerPid = Number(lock.pid);
+        if (!ownerPid) stale = Date.now() - fs.statSync(AE_COMMAND_LOCK_PATH).mtimeMs > 30000;
+        else {
+          try { process.kill(ownerPid, 0); }
+          catch { stale = true; }
+        }
+      } catch {
+        try { stale = Date.now() - fs.statSync(AE_COMMAND_LOCK_PATH).mtimeMs > 30000; } catch {}
+      }
+      if (stale) {
+        try { fs.unlinkSync(AE_COMMAND_LOCK_PATH); } catch {}
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+  }
+  throw new Error("Another After Effects command is still running. Wait for it to finish and try again.");
+}
+
+async function runAeBridgeCommand(operation: string, action: string, parameters: Record<string, unknown> = {}, timeoutMs = 15000): Promise<any> {
+  const health = readBridgeHeartbeat();
+  if (health.status !== "ready") throw new Error(`${health.message} Keep the MCP Bridge panel open with Auto-run enabled.`);
+  const release = await acquireAeBridgeLock(timeoutMs + 5000);
+  const commandId = `chat-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
+  try {
+    writeJsonAtomic(AE_RESULT_PATH, { status: "waiting", _commandId: commandId, message: "Waiting for After Effects" });
+    writeJsonAtomic(AE_COMMAND_PATH, {
+      command: "aeCommand",
+      id: commandId,
+      args: { operation, action, ...parameters },
+      timestamp: new Date().toISOString(),
+      status: "pending",
+    });
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      let result: any = null;
+      try {
+        result = JSON.parse(fs.readFileSync(AE_RESULT_PATH, "utf8"));
+      } catch {}
+      if (result?._commandId === commandId && result.status !== "waiting") {
+        if (result.status === "error") throw new Error(result.message || `After Effects ${operation}/${action} failed.`);
+        return result;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
+    throw new Error(`After Effects did not complete ${operation}/${action} within ${timeoutMs} ms.`);
+  } finally {
+    release();
+  }
+}
+
+async function prepareAfterEffectsRequest(request: ChatRequest): Promise<ChatRequest> {
+  const prepared: ChatRequest = { ...request };
+  const project = await runAeBridgeCommand("inspect", "get", { scope: "project", maxItems: 100 });
+  prepared.context = project.data || project;
+  if (request.viewerRequested) {
+    try {
+      const capture = await runAeBridgeCommand("frame", "capture", {}, 20000);
+      const viewerPath = capture?.data?.path || capture?.path;
+      if (viewerPath) prepared.viewerPath = String(viewerPath);
+      else prepared.viewerError = "After Effects completed the viewer capture but did not return an image path.";
+    } catch (error) {
+      prepared.viewerError = String(error);
+    }
+  }
+  return prepared;
+}
 state.trustAfterEffectsMcp = savedSettings.trustAfterEffectsMcp !== false;
 state.noApprovalPrompts = savedSettings.noApprovalPrompts !== false;
 
-function executableCandidates(): string[] {
-  const candidates = [
-    path.join(process.env.LOCALAPPDATA || "", "Programs", "OpenAI", "Codex", "bin", "codex.exe"),
-    path.join(process.env.LOCALAPPDATA || "", "OpenAI", "Codex", "bin", "codex.exe"),
-    path.join(os.homedir(), ".local", "bin", "codex.exe"),
-  ];
+function applyProviderSnapshot(snapshot: ProviderSnapshot): void {
+  state.provider = snapshot.id;
+  state.providerName = snapshot.label;
+  state.cliStatus = snapshot.cliStatus;
+  state.cliPath = snapshot.cliPath;
+  state.cliVersion = snapshot.cliVersion;
+  state.mcpStatus = snapshot.mcpStatus;
+  state.account = snapshot.account;
+  state.error = null;
+  if (snapshot.cliStatus === "ready") state.statusText = "Ready";
+  else if (snapshot.cliStatus === "signedOut") state.statusText = `${snapshot.label} is installed - sign in required`;
+  else if (snapshot.cliStatus === "missing") state.statusText = `${snapshot.label} is not installed`;
+}
 
-  const where = spawnSync("where.exe", ["codex.exe"], { encoding: "utf8", windowsHide: true });
-  if (where.status === 0 && where.stdout) {
-    candidates.unshift(...where.stdout.split(/\r?\n/).map((value) => value.trim()).filter(Boolean));
+function refreshProviderCatalog(): ProviderSnapshot[] {
+  const snapshots = PROVIDER_ORDER.map((providerId) => inspectProvider(providerId, providerId === state.provider));
+  state.providers = snapshots;
+  const current = snapshots.find((snapshot) => snapshot.id === state.provider) || snapshots[0];
+  applyProviderSnapshot(current);
+  if (current.cliStatus === "ready") ensureCurrentProviderMcp(current);
+  saveState();
+  return snapshots;
+}
+
+function ensureCurrentProviderMcp(snapshot: ProviderSnapshot): void {
+  const mcpExecutable = findBundledMcpExecutable();
+  if (!mcpExecutable || (snapshot.id === "pi" && !findPiExtensionPath())) {
+    snapshot.mcpStatus = "missing";
+    state.mcpStatus = "missing";
+    return;
   }
-  return Array.from(new Set(candidates.filter(Boolean)));
+  if (snapshot.id === "codex") {
+    ensureMcpRegistration();
+    snapshot.mcpStatus = state.mcpStatus;
+    return;
+  }
+  if (snapshot.id === "gemini" && snapshot.cliPath) {
+    const existing = spawnCliSync(snapshot.cliPath, ["mcp", "list"], { timeout: 15000 });
+    const existingOutput = `${existing.stdout || existing.stderr || ""}`;
+    if (existing.status !== 0 || !/AfterEffectsMCP/i.test(existingOutput) || !registrationOutputMatchesPath(existingOutput, mcpExecutable)) {
+      if (/AfterEffectsMCP/i.test(existingOutput)) {
+        spawnCliSync(snapshot.cliPath, ["mcp", "remove", "AfterEffectsMCP"], { timeout: 15000 });
+      }
+      const added = spawnCliSync(snapshot.cliPath, ["mcp", "add", "AfterEffectsMCP", mcpExecutable, "--scope", "user", "--trust"], { timeout: 20000 });
+      snapshot.mcpStatus = added.status === 0 ? "ready" : "missing";
+    } else snapshot.mcpStatus = "ready";
+  } else snapshot.mcpStatus = "ready";
+  state.mcpStatus = snapshot.mcpStatus;
+}
+
+function registrationOutputMatchesPath(output: string, expectedPath: string): boolean {
+  const normalize = (value: string) => value.replace(/\\\\/g, "/").replace(/\\/g, "/").replace(/["']/g, "").toLowerCase();
+  return normalize(output).includes(normalize(expectedPath));
 }
 
 function checkCodex(): boolean {
   state.cliStatus = "checking";
   state.statusText = "Checking Codex CLI...";
   saveState();
-
-  for (const candidate of executableCandidates()) {
-    if (!fs.existsSync(candidate)) continue;
-    const version = spawnSync(candidate, ["--version"], { encoding: "utf8", windowsHide: true, timeout: 10000 });
-    if (version.status !== 0) continue;
-
-    state.cliPath = candidate;
-    state.cliVersion = `${version.stdout || version.stderr}`.trim() || "Installed";
-    const login = spawnSync(candidate, ["login", "status"], { encoding: "utf8", windowsHide: true, timeout: 15000 });
-    state.cliStatus = login.status === 0 ? "ready" : "signedOut";
-    state.statusText = login.status === 0 ? "Codex is ready" : "Codex is installed — sign in required";
-    state.error = null;
-    if (login.status !== 0) state.account = null;
-    if (login.status === 0) ensureMcpRegistration();
-    saveState();
-    return true;
-  }
-
-  state.cliPath = null;
-  state.cliVersion = null;
-  state.mcpStatus = "unknown";
-  state.cliStatus = "missing";
-  state.statusText = "Codex CLI is not installed";
+  const snapshot = inspectProvider("codex");
+  applyProviderSnapshot(snapshot);
+  if (snapshot.cliStatus === "ready") ensureCurrentProviderMcp(snapshot);
   saveState();
-  return false;
+  return snapshot.installed;
 }
 
 function findBundledMcpExecutable(): string | null {
@@ -303,61 +497,27 @@ function findBundledMcpExecutable(): string | null {
 
 function ensureMcpRegistration(): void {
   if (!state.cliPath) return;
-  const existing = spawnSync(state.cliPath, ["mcp", "get", "AfterEffectsMCP"], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 15000,
-  });
-  if (existing.status === 0) {
-    state.mcpStatus = "ready";
-    return;
-  }
-
   const mcpExecutable = findBundledMcpExecutable();
   if (!mcpExecutable) {
     state.mcpStatus = "missing";
     return;
   }
-  const added = spawnSync(state.cliPath, ["mcp", "add", "AfterEffectsMCP", "--", mcpExecutable], {
-    encoding: "utf8",
-    windowsHide: true,
-    timeout: 20000,
-  });
+  const existing = spawnCliSync(state.cliPath, ["mcp", "get", "AfterEffectsMCP"], { timeout: 15000 });
+  const existingOutput = `${existing.stdout || existing.stderr || ""}`;
+  if (existing.status === 0 && registrationOutputMatchesPath(existingOutput, mcpExecutable)) {
+    state.mcpStatus = "ready";
+    return;
+  }
+  if (existing.status === 0) spawnCliSync(state.cliPath, ["mcp", "remove", "AfterEffectsMCP"], { timeout: 15000 });
+  const added = spawnCliSync(state.cliPath, ["mcp", "add", "AfterEffectsMCP", "--", mcpExecutable], { timeout: 20000 });
   state.mcpStatus = added.status === 0 ? "ready" : "missing";
   if (added.status !== 0) {
     state.error = `${added.stderr || added.stdout || "Unable to register AfterEffectsMCP"}`.trim();
   }
 }
 
-function installCodex(): void {
-  if (state.cliStatus === "installing") return;
-  state.cliStatus = "installing";
-  state.statusText = "Installing Codex CLI...";
-  state.error = null;
-  appendTranscript("system", "Installing Codex CLI with the official standalone Windows installer...");
-
-  const child = spawn(
-    "powershell.exe",
-    ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "irm https://chatgpt.com/codex/install.ps1 | iex"],
-    { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] },
-  );
-  child.stdout.on("data", (chunk) => appendTranscript("system", String(chunk).trim()));
-  child.stderr.on("data", (chunk) => appendTranscript("system", String(chunk).trim()));
-  child.on("close", (code) => {
-    if (code === 0 && checkCodex()) {
-      appendTranscript("system", "Codex CLI installation completed.");
-    } else {
-      state.cliStatus = "missing";
-      state.statusText = "Codex CLI installation failed";
-      state.error = `Installer exited with code ${code}`;
-      appendTranscript("system", `${state.error}. Use Open Official Instructions for the manual option.`);
-      saveState();
-    }
-  });
-}
-
 function openExternalUrl(url: string): void {
-  if (!/^https:\/\//i.test(url)) throw new Error("Codex returned an invalid sign-in URL.");
+  if (!/^https:\/\//i.test(url)) throw new Error("The CLI returned an invalid sign-in URL.");
   const child = spawn("rundll32.exe", ["url.dll,FileProtocolHandler", url], {
     windowsHide: true,
     detached: true,
@@ -393,11 +553,10 @@ class AppServerClient {
   private async startInternal(): Promise<void> {
     if (!state.cliPath && !checkCodex()) throw new Error("Codex CLI is not installed.");
 
-    const child = spawn(state.cliPath!, ["app-server", "--listen", "stdio://"], {
+    const child = spawnCli(state.cliPath!, ["app-server", "--listen", "stdio://"], {
       cwd: os.homedir(),
-      windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
-    });
+    }) as ChildProcessWithoutNullStreams;
     this.process = child;
     child.stderr.on("data", (chunk) => {
       const text = String(chunk).trim();
@@ -1106,7 +1265,286 @@ $bitmap.Dispose()
   });
 }
 
+function findPiExtensionPath(): string | null {
+  const candidates = [
+    path.join(path.dirname(process.execPath), "pi-after-effects-extension.ts"),
+    path.join(process.env.APPDATA || "", "AfterEffectsMCP", "pi-after-effects-extension.ts"),
+    path.join(os.homedir(), "Documents", "ae-mcp-bridge", "bin", "pi-after-effects-extension.ts"),
+    path.join(process.cwd(), "assets", "pi-after-effects-extension.ts"),
+  ];
+  return candidates.find((candidate) => candidate && fs.existsSync(candidate)) || null;
+}
+
+function writeProviderMcpConfig(): string {
+  const mcpExecutable = findBundledMcpExecutable();
+  if (!mcpExecutable) throw new Error("The bundled After Effects MCP server could not be found.");
+  writeJsonAtomic(MCP_CONFIG_PATH, createStandardMcpConfig(mcpExecutable));
+  return mcpExecutable;
+}
+
+function writeKimiCodeProjectMcpConfig(mcpExecutable: string): void {
+  const directory = path.join(CHAT_DIR, ".kimi-code");
+  fs.mkdirSync(directory, { recursive: true });
+  writeJsonAtomic(path.join(directory, "mcp.json"), createStandardMcpConfig(mcpExecutable));
+}
+
+function findNpm(): string | null {
+  const candidates = [
+    path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs", "npm.cmd"),
+    path.join(process.env.APPDATA || "", "npm", "npm.cmd"),
+  ];
+  const where = spawnSync("where.exe", ["npm.cmd"], { encoding: "utf8", windowsHide: true });
+  if (where.status === 0 && where.stdout) candidates.unshift(...String(where.stdout).split(/\r?\n/).filter(Boolean));
+  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+}
+
+function installCurrentProvider(): void {
+  const definition = PROVIDERS[state.provider];
+  if (state.cliStatus === "installing") return;
+  state.cliStatus = "installing";
+  state.statusText = `Installing ${definition.label}...`;
+  state.error = null;
+  appendTranscript("system", `Installing ${definition.label} using its official installation method...`);
+
+  let child: ChildProcess;
+  if (definition.installKind === "powershell") {
+    child = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", String(definition.installCommand)], {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } else {
+    const npm = findNpm();
+    if (!npm) {
+      state.cliStatus = "missing";
+      state.statusText = `${definition.label} needs Node.js or manual installation`;
+      appendTranscript("system", `Node.js is not installed. Opening the official ${definition.label} instructions instead.`);
+      openExternalUrl(definition.docsUrl);
+      saveState();
+      return;
+    }
+    child = spawnCli(npm, definition.installCommand as string[], { stdio: ["ignore", "pipe", "pipe"] });
+  }
+  child.stdout?.on("data", (chunk) => appendTranscript("system", String(chunk).trim()));
+  child.stderr?.on("data", (chunk) => appendTranscript("system", String(chunk).trim()));
+  child.on("error", (error) => {
+    state.cliStatus = "missing";
+    state.error = String(error);
+    state.statusText = `${definition.label} installation failed`;
+    saveState();
+  });
+  child.on("close", (code) => {
+    refreshProviderCatalog();
+    if (code === 0 && state.cliStatus !== "missing") appendTranscript("system", `${definition.label} installation completed.`);
+    else {
+      state.error = `Installer exited with code ${code}`;
+      appendTranscript("system", `${definition.label} installation did not complete. Use Official Instructions for the manual option.`);
+    }
+    saveState();
+  });
+}
+
+async function startGenericLogin(): Promise<void> {
+  if (!state.cliPath) throw new Error(`${state.providerName} is not installed.`);
+  if (state.busy) throw new Error(`Stop the active ${state.providerName} turn before changing accounts.`);
+  const loginArgs: Record<Exclude<CliProviderId, "codex">, string[]> = {
+    claude: ["auth", "login"],
+    gemini: [],
+    kimi: ["login"],
+    pi: [],
+    opencode: ["auth", "login"],
+  };
+  if (state.provider === "codex") return;
+  const args = loginArgs[state.provider];
+  const terminal = visibleTerminalInvocation(state.cliPath, args, `${state.providerName} Sign In`);
+  await new Promise<void>((resolve, reject) => {
+    let stderr = "";
+    const launcher = spawn(terminal.command, terminal.args, { windowsHide: true, stdio: ["ignore", "ignore", "pipe"] });
+    launcher.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    launcher.once("error", reject);
+    launcher.once("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `Unable to open the ${state.providerName} sign-in terminal.`));
+    });
+  });
+  if (state.provider === "pi") {
+    appendTranscript("system", "Pi opened in a terminal. Enter /login, choose and authenticate a model provider, then choose Refresh status here.");
+  } else {
+    appendTranscript("system", `A terminal was opened intentionally for ${state.providerName} sign-in. Complete authentication there, then choose Refresh status.`);
+  }
+}
+
+class GenericCliClient {
+  private child: ChildProcess | null = null;
+  private assistantEntry: TranscriptEntry | null = null;
+  private activityIds = new Set<string>();
+  private providerError: string | null = null;
+
+  async sendTurn(request: ChatRequest): Promise<void> {
+    if (state.provider === "codex") throw new Error("Codex uses the app-server adapter.");
+    if (!state.cliPath || state.cliStatus !== "ready") throw new Error(`Sign in to ${state.providerName} before starting chat.`);
+    if (state.busy) throw new Error(`${state.providerName} is already working.`);
+    const prompt = (request.prompt || "").trim();
+    if (!prompt) throw new Error("Enter a message first.");
+    this.providerError = null;
+
+    const attachments: Array<{ kind: "viewer" | "aeUi"; label: string; path: string }> = [];
+    const attachmentPaths: string[] = [];
+    const notices: string[] = [];
+    if (request.viewerPath) {
+      const viewerPath = normalizeAttachmentPath(request.viewerPath);
+      if (await waitForStableFile(viewerPath) && fs.existsSync(viewerPath)) {
+        attachments.push({ kind: "viewer", label: "Composition Viewer", path: viewerPath });
+        attachmentPaths.push(viewerPath);
+      } else notices.push(request.viewerError || "The requested Composition Viewer image was unavailable.");
+    } else if (request.viewerRequested) notices.push(request.viewerError || "The requested Composition Viewer image was unavailable.");
+    if (request.attachAeUi) {
+      const uiPath = await captureAfterEffectsWindow();
+      if (uiPath) {
+        attachments.push({ kind: "aeUi", label: "After Effects UI", path: uiPath });
+        attachmentPaths.push(uiPath);
+      } else notices.push("The After Effects UI screenshot was unavailable or minimized.");
+    }
+    const contextText = request.context ? `\n\nAfter Effects context:\n${JSON.stringify(request.context, null, 2)}` : "";
+    const noticeText = notices.length ? `\n\nAttachment status:\n${notices.join("\n")} Do not claim to see an image that was not attached.` : "";
+    const attachmentText = attachmentPaths.length
+      ? `\n\nAttached images (inspect these files as part of the request):\n${attachmentPaths.map((filePath) => `- ${filePath}`).join("\n")}`
+      : "";
+    const promptText = `${prompt}${contextText}${attachmentText}${noticeText}`;
+    const promptFile = path.join(ATTACHMENT_DIR, `${state.provider}-prompt-${Date.now()}.txt`);
+    fs.writeFileSync(promptFile, promptText, "utf8");
+    appendTranscript("user", prompt, attachments);
+
+    const mcpExecutable = writeProviderMcpConfig();
+    const piExtensionPath = findPiExtensionPath();
+    if (state.provider === "pi" && !piExtensionPath) throw new Error("The bundled Pi After Effects adapter could not be found.");
+    const provider = state.provider;
+    const kimiFlavor = provider === "kimi" ? detectKimiCliFlavor(state.cliPath) : undefined;
+    if (kimiFlavor === "kimi-code") writeKimiCodeProjectMcpConfig(mcpExecutable);
+    const runSpec = buildProviderRunSpec({
+      provider,
+      promptText,
+      promptFile,
+      attachmentPaths,
+      sessionId: providerSessions[provider] || null,
+      autoApprove: state.noApprovalPrompts,
+      mcpConfigPath: MCP_CONFIG_PATH,
+      mcpExecutable,
+      piExtensionPath: piExtensionPath || "",
+      piSessionDir: PI_SESSION_DIR,
+      kimiFlavor,
+    });
+
+    this.assistantEntry = {
+      id: `${Date.now()}-assistant`, role: "assistant", text: "", time: new Date().toISOString(), providerLabel: state.providerName,
+    };
+    state.transcript.push(this.assistantEntry);
+    this.activityIds.clear();
+    state.busy = true;
+    state.activeTurnId = `${provider}-${Date.now()}`;
+    state.statusText = `${state.providerName} is working...`;
+    state.activity = { kind: "thinking", label: "Thinking" };
+    state.error = null;
+    saveState();
+
+    const child = spawnCli(state.cliPath, runSpec.args, {
+      cwd: CHAT_DIR, env: runSpec.env, stdio: ["pipe", "pipe", "pipe"],
+    });
+    this.child = child;
+    if (runSpec.stdinText) child.stdin?.end(runSpec.stdinText);
+    else child.stdin?.end();
+    const output = readline.createInterface({ input: child.stdout! });
+    output.on("line", (line) => this.handleLine(provider, line));
+    let stderr = "";
+    child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
+    child.on("error", (error) => this.finish(false, String(error)));
+    child.on("close", (code) => {
+      if (this.child !== child) return;
+      const failed = code !== 0 || Boolean(this.providerError);
+      this.finish(!failed, this.providerError || (failed ? stderr.trim() || `${state.providerName} exited with code ${code}` : undefined));
+      if ((provider === "pi" || provider === "kimi") && code === 0) providerSessions[provider] = "continue";
+      saveSettings();
+    });
+  }
+
+  private handleLine(provider: CliProviderId, line: string): void {
+    for (const event of normalizeProviderLine(provider, line)) {
+      if (event.kind === "session" && event.sessionId) {
+        providerSessions[provider] = event.sessionId;
+        saveSettings();
+      } else if ((event.kind === "textDelta" || event.kind === "finalText") && event.text) {
+        if (!this.assistantEntry) continue;
+        if (event.kind === "finalText") this.assistantEntry.text = event.text;
+        else this.assistantEntry.text += event.text;
+        state.statusText = `${state.providerName} is responding...`;
+        state.activity = { kind: "responding", label: "Responding" };
+      } else if (event.kind === "toolStart") {
+        const name = event.toolName || "Tool";
+        const isAe = /after.?effects|aftereffectsmcp/i.test(name);
+        const activityId = event.toolId || `${Date.now()}-tool`;
+        this.activityIds.add(activityId);
+        state.activityLog.push({
+          id: activityId, kind: isAe ? "afterEffects" : "tool",
+          label: isAe ? "After Effects" : name, detail: (event.toolDetail || "Using tool").slice(0, 500),
+          status: "running", time: new Date().toISOString(),
+        });
+        state.statusText = isAe ? `${state.providerName} is using After Effects...` : `${state.providerName} is using ${name}...`;
+        state.activity = { kind: isAe ? "afterEffects" : "tool", label: isAe ? "Using After Effects" : `Using ${name}` };
+      } else if (event.kind === "toolEnd") {
+        const match = [...state.activityLog].reverse().find((item) => item.id === event.toolId || item.label === event.toolName);
+        if (match) match.status = event.failed ? "failed" : "completed";
+      } else if (event.kind === "error") {
+        this.providerError = event.text || `${state.providerName} reported an error`;
+        state.error = this.providerError;
+      }
+    }
+    saveState();
+  }
+
+  async stopTurn(): Promise<void> {
+    const child = this.child;
+    if (!child || !state.busy) return;
+    state.statusText = `Stopping ${state.providerName}...`;
+    state.activity = { kind: "stopping", label: "Stopping" };
+    saveState();
+    this.child = null;
+    try { child.kill(); } catch {}
+    if (process.platform === "win32" && child.pid) {
+      spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
+    }
+    this.finish(true);
+    state.statusText = "Stopped";
+    state.activity = { kind: "idle", label: "Stopped" };
+    saveState();
+  }
+
+  private finish(success: boolean, error?: string): void {
+    this.child = null;
+    state.busy = false;
+    state.activeTurnId = null;
+    if (this.assistantEntry && !this.assistantEntry.text) {
+      state.transcript = state.transcript.filter((entry) => entry !== this.assistantEntry);
+    }
+    this.assistantEntry = null;
+    this.providerError = null;
+    for (const activity of state.activityLog) {
+      if (this.activityIds.has(activity.id) && activity.status === "running") activity.status = success ? "completed" : "failed";
+    }
+    this.activityIds.clear();
+    if (!success || error) {
+      state.error = error || `${state.providerName} failed`;
+      state.statusText = `${state.providerName} request failed`;
+      state.activity = { kind: "error", label: "Request failed", detail: state.error };
+    } else if (state.statusText !== "Stopped") {
+      state.error = null;
+      state.statusText = "Ready";
+      state.activity = { kind: "idle", label: "Ready" };
+    }
+    saveState();
+  }
+}
+
 const appServer = new AppServerClient();
+const genericCli = new GenericCliClient();
 
 async function handleRequest(request: ChatRequest): Promise<void> {
   if (typeof request.trustAfterEffectsMcp === "boolean") {
@@ -1119,27 +1557,56 @@ async function handleRequest(request: ChatRequest): Promise<void> {
   }
   switch (request.action) {
     case "status":
-      checkCodex();
+      refreshProviderCatalog();
+      if (state.provider === "codex" && state.cliStatus === "ready") await appServer.start();
       break;
     case "installCodex":
-      installCodex();
+    case "installProvider":
+      installCurrentProvider();
       break;
     case "login":
-      await appServer.startLogin(false);
+      if (state.provider === "codex") await appServer.startLogin(false);
+      else await startGenericLogin();
       break;
     case "relogin":
-      await appServer.startLogin(true);
+      if (state.provider === "codex") await appServer.startLogin(true);
+      else await startGenericLogin();
       break;
     case "send":
-      await appServer.sendTurn(request);
+      {
+        const preparedRequest = await prepareAfterEffectsRequest(request);
+        if (state.provider === "codex") await appServer.sendTurn(preparedRequest);
+        else await genericCli.sendTurn(preparedRequest);
+      }
       break;
     case "stop":
-      await appServer.stopTurn();
+      if (state.provider === "codex") await appServer.stopTurn();
+      else await genericCli.stopTurn();
       break;
     case "approval":
       appServer.respondToApproval(request.decision);
       break;
     case "updateSettings":
+      break;
+    case "selectProvider": {
+      if (state.busy) throw new Error(`Stop the active ${state.providerName} turn before switching CLI tools.`);
+      if (!request.providerId || !PROVIDERS[request.providerId]) throw new Error("Unknown CLI provider.");
+      state.provider = request.providerId;
+      state.providerName = PROVIDERS[request.providerId].label;
+      const snapshot = inspectProvider(request.providerId);
+      const existing = state.providers.findIndex((item) => item.id === request.providerId);
+      if (existing >= 0) state.providers[existing] = snapshot;
+      else state.providers.push(snapshot);
+      applyProviderSnapshot(snapshot);
+      if (snapshot.cliStatus === "ready") ensureCurrentProviderMcp(snapshot);
+      state.activity = { kind: snapshot.cliStatus === "ready" ? "idle" : "setup", label: snapshot.cliStatus === "ready" ? "Ready" : "Setup required" };
+      saveSettings();
+      saveState();
+      if (request.providerId === "codex" && snapshot.cliStatus === "ready") await appServer.start();
+      break;
+    }
+    case "openProviderDocs":
+      openExternalUrl(PROVIDERS[state.provider].docsUrl);
       break;
     case "clearTranscript":
       state.transcript = [];
@@ -1212,7 +1679,9 @@ process.on("unhandledRejection", (error) => {
 });
 
 state.hostStatus = "ready";
-if (checkCodex()) {
+updateBridgeHealthState();
+refreshProviderCatalog();
+if (state.provider === "codex" && state.cliStatus === "ready") {
   void appServer.start().catch((error) => {
     state.error = String(error);
     state.statusText = "Codex account check failed";
@@ -1233,4 +1702,7 @@ setInterval(() => {
 
 // The CEP panel uses updatedAt as a heartbeat. If this process disappears,
 // the panel can relaunch it instead of leaving an old busy state on screen.
-setInterval(() => saveState(), 2000);
+setInterval(() => {
+  updateBridgeHealthState();
+  saveState();
+}, 2000);

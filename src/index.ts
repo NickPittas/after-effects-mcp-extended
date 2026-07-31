@@ -10,8 +10,13 @@ import { fileURLToPath } from 'url';
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.9.11"
+  version: "1.10.0"
 });
+
+// Keep legacy implementations available as internal reference code without
+// exposing thirteen overlapping single-purpose tools to every CLI harness.
+// The public MCP surface is intentionally the single `after-effects` tool.
+const legacyTool = ((..._args: any[]): void => {}) as McpServer["tool"];
 
 // ES Modules replacement for __dirname
 const __filename = fileURLToPath(import.meta.url);
@@ -78,14 +83,11 @@ function readResultsFromTempFile(): string {
 async function waitForBridgeResult(expectedCommand?: string, expectedCommandId?: string, timeoutMs: number = 5000, pollMs: number = 250): Promise<string> {
   const start = Date.now();
   const resultPath = path.join(getAETempDir(), 'ae_mcp_result.json');
-  let lastSize = -1;
-
   while (Date.now() - start < timeoutMs) {
     if (fs.existsSync(resultPath)) {
       try {
         const content = fs.readFileSync(resultPath, 'utf8');
-        if (content && content.length > 0 && content.length !== lastSize) {
-          lastSize = content.length;
+        if (content && content.length > 0) {
           try {
             const parsed = JSON.parse(content);
             if (
@@ -195,6 +197,19 @@ async function acquireBridgeLock(timeoutMs: number): Promise<() => void> {
   throw new Error("Another After Effects command is still in progress.");
 }
 
+function assertBridgeAvailable(maxAgeMs: number = 4000): void {
+  const statusPath = path.join(getAETempDir(), "ae_bridge_status.json");
+  try {
+    const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
+    const updatedAt = typeof status.updatedAt === "number" ? status.updatedAt : Date.parse(String(status.updatedAt || ""));
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > maxAgeMs) throw new Error("heartbeat is stale");
+    if (status.autoRun === false || status.state === "paused") throw new Error("Auto-run is disabled");
+    if (!["starting", "checking", "ready"].includes(String(status.state || ""))) throw new Error(`state is '${status.state || "unknown"}'`);
+  } catch (error) {
+    throw new Error(`After Effects bridge is unavailable (${error instanceof Error ? error.message : String(error)}). Keep the MCP Bridge panel open with Auto-run enabled.`);
+  }
+}
+
 // Add a resource to expose project compositions
 server.resource(
   "compositions",
@@ -222,7 +237,7 @@ server.resource(
 );
 
 // Add a tool for running read-only scripts
-server.tool(
+legacyTool(
   "run-script",
   "Run a read-only script in After Effects",
   {
@@ -299,7 +314,7 @@ server.tool(
   }
 );
 
-server.tool(
+legacyTool(
   "create-text-animator",
   "Create an After Effects Text Animator with one or more animator properties and an animated range selector.",
   {
@@ -351,7 +366,7 @@ server.tool(
 );
 
 // Add a tool to get the results from the last script execution
-server.tool(
+legacyTool(
   "get-results",
   "Get results from the last script executed in After Effects",
   {},
@@ -433,7 +448,7 @@ server.prompt(
 );
 
 // Add a tool to provide help and instructions
-server.tool(
+legacyTool(
   "get-help",
   "Get help on using the After Effects MCP integration",
   {},
@@ -500,7 +515,7 @@ Note: The auto-running panel can be left open in After Effects to continuously l
 );
 
 // Add a tool specifically for creating compositions
-server.tool(
+legacyTool(
   "create-composition",
   "Create a new composition in After Effects with specified parameters",
   {
@@ -558,7 +573,7 @@ const LayerIdentifierSchema = {
 const KeyframeValueSchema = z.unknown().describe("The value for the keyframe (e.g., [x,y] for Position, [w,h] for Scale, angle for Rotation, percentage for Opacity)");
 
 // Tool for setting a layer keyframe
-server.tool(
+legacyTool(
   "setLayerKeyframe", // Corresponds to the function name in ExtendScript
   "Set a keyframe for a specific layer property at a given time.",
   {
@@ -596,7 +611,7 @@ server.tool(
 );
 
 // Tool for setting a layer expression
-server.tool(
+legacyTool(
   "setLayerExpression", // Corresponds to the function name in ExtendScript
   "Set or remove an expression for a specific layer property.",
   {
@@ -636,7 +651,7 @@ server.tool(
 
 // --- BEGIN NEW TESTING TOOL --- 
 // Add a special tool for directly testing the keyframe functionality
-server.tool(
+legacyTool(
   "test-animation",
   "Test animation functionality in After Effects",
   {
@@ -751,7 +766,7 @@ This bypasses the MCP Bridge Auto panel and will directly modify the specified l
 // --- BEGIN NEW EFFECTS TOOLS ---
 
 // Add a tool for applying effects to layers
-server.tool(
+legacyTool(
   "apply-effect",
   "Apply an effect to a layer in After Effects",
   {
@@ -792,7 +807,7 @@ server.tool(
 );
 
 // Add a tool for applying effect templates
-server.tool(
+legacyTool(
   "apply-effect-template",
   "Apply a predefined effect template to a layer in After Effects",
   {
@@ -842,7 +857,7 @@ server.tool(
 // --- END NEW EFFECTS TOOLS ---
 
 // Add direct MCP function for applying effects
-server.tool(
+legacyTool(
   "mcp_aftereffects_applyEffect",
   "Apply an effect to a layer in After Effects",
   {
@@ -886,7 +901,7 @@ server.tool(
 );
 
 // Add direct MCP function for applying effect templates
-server.tool(
+legacyTool(
   "mcp_aftereffects_applyEffectTemplate",
   "Apply a predefined effect template to a layer in After Effects",
   {
@@ -939,7 +954,7 @@ server.tool(
 );
 
 // Update help information to include the new effects tools
-server.tool(
+legacyTool(
   "mcp_aftereffects_get_effects_help",
   "Get help on using After Effects effects",
   {},
@@ -1023,9 +1038,27 @@ To apply the "cinematic-look" template:
   }
 );
 
+const afterEffectsOperationActions: Record<string, readonly string[]> = {
+  inspect: ["get"],
+  property: ["get", "set", "expression"],
+  keyframe: ["get", "set", "update", "remove", "clear"],
+  effect: ["get", "add", "update", "remove", "move"],
+  mask: ["get", "add", "set", "update", "remove"],
+  shape: ["get", "add", "set", "update", "remove", "move", "duplicate"],
+  text: ["get", "add", "set", "update"],
+  layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
+  composition: ["get", "create", "update", "duplicate", "remove"],
+  project: ["get", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
+  render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
+  frame: ["copy", "capture"],
+};
+const afterEffectsActionContract = Object.entries(afterEffectsOperationActions)
+  .map(([operation, actions]) => `${operation}=${actions.join("|")}`)
+  .join("; ");
+
 server.tool(
   "after-effects",
-  "General After Effects control surface. Use one operation with structured parameters for inspection, properties, keyframes, effects, masks, shape contents, text, layers, compositions, project media, imports, rendering, or frame capture.",
+  `General After Effects control surface. Exact actions by operation: ${afterEffectsActionContract}. Composition creation uses action=create, never add.`,
   {
     operation: z.enum([
       "inspect",
@@ -1041,17 +1074,22 @@ server.tool(
       "render",
       "frame"
     ]).describe("Capability area to use."),
-    action: z.string().describe("Action within the selected operation, such as get, set, add, update, remove, import, media, relink, reload, interpret, proxy, dependencies, manifest, cleanup, render, or capture. Layer add supports generated layers and existing project items or footage."),
+    action: z.string().describe("Action permitted for the chosen operation. Composition uses create for creation; add is invalid for composition. Valid pairs are listed in the tool description."),
     parameters: z.record(z.string(), z.unknown()).optional().describe(
-      "Operation-specific parameters. Project items can be selected by itemIndex, itemId, or itemName; property paths are arrays of names, match names, or 1-based indexes."
+      "Operation-specific parameters. Select compositions with compId, compIndex, or compName; layers with layerIndex or layerName; project items with itemIndex, itemId, or itemName; properties with propertyPath arrays of names, match names, or 1-based indexes. composition/create accepts name, width, height, pixelAspect, duration, and frameRate; omitted creation values default to Composition, 1920x1080, square pixels, 10 seconds, and 25 fps."
     )
   },
   async ({ operation, action, parameters = {} }) => {
     let releaseBridge: (() => void) | null = null;
     try {
+      const allowedActions = afterEffectsOperationActions[operation];
+      if (!allowedActions.includes(action)) {
+        throw new Error(`Unsupported action '${action}' for operation '${operation}'. Valid actions: ${allowedActions.join(", ")}.`);
+      }
       const timeoutMs = operation === "render" && action === "render"
         ? Number(parameters.timeoutMs || 3600000)
         : 15000;
+      assertBridgeAvailable();
       releaseBridge = await acquireBridgeLock(timeoutMs + 15000);
       const commandId = createBridgeCommandId();
       clearResultsFile(commandId);
@@ -1088,7 +1126,7 @@ server.tool(
 );
 
 // Add a direct tool for our bridge test effects
-server.tool(
+legacyTool(
   "run-bridge-test",
   "Run the bridge test effects script to verify communication and apply test effects",
   {},

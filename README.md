@@ -20,7 +20,7 @@ Extended capabilities include:
 - Text animators with character, word, and line range selectors
 - Improved bridge response tracking and direct rendered-frame image returns
 - Dockable, resizable ScriptUI bridge panel
-- Dockable CEP/HTML Codex Chat panel with persistent streamed conversations, color-coded message bubbles, a one-click tool-event filter, bottom-follow scrolling, live activity, signed-in account display and switching, viewer/UI screenshot cards, responsive sizing, Stop, and a no-permission-prompts autonomous mode
+- Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, and OpenCode, with per-provider sessions, streamed conversations, account/setup controls, viewer/UI screenshots, live tool activity, Stop, and autonomous mode
 - Standalone Windows MCP and chat executables; release users do not need Node.js or npm
 
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
@@ -90,7 +90,7 @@ For a release install:
 
 - Adobe After Effects (2022 or later)
 - Windows PowerShell, included with Windows
-- A Codex account; the panel can install Codex CLI and start sign-in
+- An account for at least one supported CLI: Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, or OpenCode
 
 Node.js and npm are only required for developing or rebuilding the project.
 
@@ -101,7 +101,7 @@ Release users download and double-click
 for administrator permission once, detects installed After Effects versions,
 and installs all three components:
 
-- The standalone MCP server and automatic Codex MCP registration
+- The standalone MCP server and multi-CLI integration
 - The dockable **After Effects MCP Chat** CEP panel
 - The `mcp-bridge-auto.jsx` command bridge for each detected AE installation
 
@@ -110,9 +110,18 @@ it can be removed normally. It does not require Node.js or npm. Restart After
 Effects after installation, open **Window > mcp-bridge-auto.jsx**, then open
 **Window > Extensions > After Effects MCP Chat**.
 
-If Codex CLI is missing, choose **Install Codex CLI**. The panel shows the exact
-official standalone installer command before running it. This installation does
-not use Node.js or npm. If Codex is installed but signed out, choose **Sign In**.
+Choose a CLI from the selector in the panel. Codex and Kimi use their official
+standalone Windows installers. Claude Code, Gemini CLI, Pi, and OpenCode use
+their official npm packages when Node.js/npm is available; otherwise the panel
+opens that provider's official installation instructions. Sign-in is launched
+only when the user presses **Sign in**. Each provider keeps its own conversation
+session.
+
+Codex uses its native app-server integration. Claude Code, Gemini CLI, Kimi CLI,
+and OpenCode receive the bundled AfterEffectsMCP server through their supported
+MCP configuration. Pi does not provide native MCP support, so the installer
+ships a small Pi extension that exposes the same unified After Effects command
+through the existing local bridge.
 
 Developers can build and install from source:
 
@@ -266,7 +275,9 @@ You can animate layers with:
 ### 🧩 Project Structure
 
 - `src/index.ts`: MCP server implementation
-- `src/chat-host.ts`: Codex app-server client and AE Chat companion
+- `src/chat-host.ts`: multi-CLI AE Chat companion and Codex app-server client
+- `src/cli-providers.ts`: provider detection, launch specifications, MCP configuration, and stream normalization
+- `assets/pi-after-effects-extension.ts`: bundled direct After Effects bridge tool for Pi
 - `src/scripts/mcp-bridge-auto.jsx`: Main After Effects panel script
 - `install-bridge.js`: Script to install the panel in After Effects
 - `install-standalone.ps1`: Node-free Windows release installer

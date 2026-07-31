@@ -25,11 +25,16 @@
     optionsButton: document.getElementById("optionsButton"),
     optionsPopover: document.getElementById("optionsPopover"),
     accountButton: document.getElementById("accountButton"),
+    providerSelect: document.getElementById("providerSelect"),
     accountPopover: document.getElementById("accountPopover"),
+    accountProvider: document.getElementById("accountProvider"),
     accountInitials: document.getElementById("accountInitials"),
     accountName: document.getElementById("accountName"),
     accountPlan: document.getElementById("accountPlan"),
     switchAccountButton: document.getElementById("switchAccountButton"),
+    installProviderButton: document.getElementById("installProviderButton"),
+    refreshProviderButton: document.getElementById("refreshProviderButton"),
+    providerDocsButton: document.getElementById("providerDocsButton"),
     statusDot: document.getElementById("statusDot"),
     statusText: document.getElementById("statusText"),
     activityStrip: document.getElementById("activityStrip"),
@@ -41,6 +46,7 @@
     attachmentState: document.getElementById("attachmentState"),
     attachViewer: document.getElementById("attachViewer"),
     attachAeUi: document.getElementById("attachAeUi"),
+    trustAeMcp: document.getElementById("trustAeMcp"),
     autonomousMode: document.getElementById("autonomousMode"),
     toast: document.getElementById("toast"),
     lightbox: document.getElementById("lightbox"),
@@ -48,6 +54,7 @@
     lightboxLabel: document.getElementById("lightboxLabel"),
     closeLightbox: document.getElementById("closeLightbox")
   };
+  elements.emptyCopy = document.getElementById("emptyCopy");
 
   function normalizeSystemPath(value) {
     var result = decodeURIComponent(String(value || ""));
@@ -60,30 +67,6 @@
   var chatPath = documentsPath + "/ae-mcp-bridge/codex-chat";
   var requestPath = chatPath + "/requests";
   var statePath = chatPath + "/state.json";
-
-  function evalHost(script, timeoutMs) {
-    return new Promise(function (resolve, reject) {
-      var settled = false;
-      var timer = setTimeout(function () {
-        if (settled) return;
-        settled = true;
-        reject(new Error("After Effects did not respond to the panel request."));
-      }, timeoutMs || 5000);
-      try {
-        host.evalScript(script, function (result) {
-          if (settled) return;
-          settled = true;
-          clearTimeout(timer);
-          resolve(result);
-        });
-      } catch (error) {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        reject(error);
-      }
-    });
-  }
 
   function ensureFolder(folderPath) {
     var parts = folderPath.replace(/\\/g, "/").split("/");
@@ -102,26 +85,27 @@
     request.action = action;
     var filePath = requestPath + "/" + request.id + ".json";
     var result = cep.fs.writeFile(filePath, JSON.stringify(request, null, 2));
-    if (!result || result.err !== 0) throw new Error("Unable to send request to the Codex companion.");
+    if (!result || result.err !== 0) throw new Error("Unable to send request to the CLI companion.");
   }
 
-  function quoteForExtendScript(value) {
-    return '"' + String(value || "").replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/\r/g, "\\r").replace(/\n/g, "\\n") + '"';
-  }
-
-  function captureViewerAttachment() {
-    ensureFolder(chatPath + "/attachments");
-    var outputPath = chatPath + "/attachments/viewer-cep-" + Date.now() + ".png";
-    return evalHost("aeMcpChatCaptureViewer(" + quoteForExtendScript(outputPath) + ")", 15000).then(function (responseText) {
-      var response = {};
-      try { response = JSON.parse(responseText || "{}"); } catch (_) {}
-      if (response.ok === false) return { path: null, error: response.error || "After Effects could not capture the Viewer." };
-      // Windows can expose the completed PNG a fraction after AE returns. The
-      // companion performs the reliable filesystem wait before reading it.
-      return { path: response.path || outputPath, error: null };
-    }).catch(function (error) {
-      return { path: null, error: "Viewer capture was unavailable: " + String(error) };
-    });
+  function launchCompanionDirectly() {
+    if (!cep.process || typeof cep.process.createProcess !== "function") return false;
+    var extensionPath = normalizeSystemPath(host.getSystemPath("extension"));
+    var userDataPath = normalizeSystemPath(host.getSystemPath("userData"));
+    var candidates = [
+      extensionPath + "/bin/after-effects-codex-chat.exe",
+      userDataPath + "/AfterEffectsMCP/after-effects-codex-chat.exe",
+      documentsPath + "/ae-mcp-bridge/bin/after-effects-codex-chat.exe"
+    ];
+    for (var index = 0; index < candidates.length; index++) {
+      var stat = cep.fs.stat(candidates[index]);
+      if (!stat || stat.err !== 0) continue;
+      try {
+        var result = cep.process.createProcess(candidates[index]);
+        if (result && result.err === 0 && Number(result.data) > 0) return true;
+      } catch (_) {}
+    }
+    return false;
   }
 
   function showToast(message, isError) {
@@ -214,7 +198,7 @@
     meta.className = "message-meta";
     var role = document.createElement("span");
     role.className = "message-role";
-    role.textContent = entry.role === "assistant" ? "Codex" : entry.role === "user" ? "You" : "System";
+    role.textContent = entry.role === "assistant" ? (entry.providerLabel || (state && state.providerName) || "Assistant") : entry.role === "user" ? "You" : "System";
     var time = document.createElement("span");
     time.textContent = formatTime(entry.time);
     meta.appendChild(role);
@@ -288,15 +272,27 @@
     var busy = state.busy === true;
     var error = state.hostStatus === "error" || Boolean(state.error);
     elements.statusDot.className = "status-dot " + (error ? "error" : busy ? "busy" : state.cliStatus === "ready" ? "ready" : "");
-    elements.statusText.textContent = state.statusText || "Codex Chat";
-    elements.sendButton.disabled = state.cliStatus !== "ready" || busy || localSending;
+    var providerName = state.providerName || "CLI assistant";
+    elements.statusText.textContent = state.statusText || "CLI Chat";
+    elements.sendButton.disabled = state.cliStatus !== "ready" || state.bridgeStatus !== "ready" || busy || localSending;
     elements.stopButton.disabled = !busy;
+    elements.stopButton.title = "Stop " + providerName;
+    elements.providerSelect.value = state.provider || "codex";
+    elements.providerSelect.disabled = busy;
     var account = state.account;
-    var label = account ? (account.email || account.label || account.type) : "Not signed in";
-    elements.accountInitials.textContent = initials(label);
+    var label = account ? (account.email || account.label || account.type) : state.cliStatus === "missing" ? "Not installed" : "Not signed in";
+    elements.accountInitials.textContent = account ? initials(label) : initials(providerName);
+    elements.accountProvider.textContent = providerName + " account";
     elements.accountName.textContent = label;
-    elements.accountPlan.textContent = account && account.planType ? account.planType : "";
-    elements.switchAccountButton.textContent = account ? "Switch account" : "Sign in";
+    elements.accountPlan.textContent = (account && account.planType ? account.planType + " · " : "") + (state.cliVersion || "");
+    elements.switchAccountButton.textContent = state.provider === "pi"
+      ? (account ? "Configure providers" : "Configure provider")
+      : (account ? "Switch account" : "Sign in");
+    elements.switchAccountButton.hidden = state.cliStatus === "missing";
+    elements.installProviderButton.hidden = state.cliStatus !== "missing";
+    elements.installProviderButton.textContent = "Install " + providerName;
+    elements.promptInput.placeholder = "Ask " + providerName + " to work in After Effects…";
+    elements.emptyCopy.textContent = "Ask " + providerName + " to create, inspect, animate, or render.";
   }
 
   function renderActivity() {
@@ -305,13 +301,14 @@
     elements.activityStrip.dataset.kind = activity.kind || "idle";
     elements.activityStrip.dataset.busy = state.busy ? "true" : "false";
     elements.activityLabel.textContent = activity.label || "Ready";
-    elements.activityDetail.textContent = activity.detail || (state.busy ? "Codex is working" : "Waiting for a request");
+    elements.activityDetail.textContent = activity.detail || (state.busy ? (state.providerName || "CLI assistant") + " is working" : "Waiting for a request");
   }
 
   function renderAttachmentState() {
     var chips = [];
     if (elements.attachViewer.checked) chips.push('<span class="attachment-chip active">Viewer</span>');
     if (elements.attachAeUi.checked) chips.push('<span class="attachment-chip active">AE UI</span>');
+    if (elements.trustAeMcp.checked) chips.push('<span class="attachment-chip">AE trusted</span>');
     if (elements.autonomousMode.checked) chips.push('<span class="attachment-chip">Auto</span>');
     elements.attachmentState.innerHTML = chips.join("");
   }
@@ -329,7 +326,7 @@
     if (updated && Date.now() - updated < 6500) return;
     if (Date.now() - lastCompanionLaunch < 10000) return;
     lastCompanionLaunch = Date.now();
-    evalHost("aeMcpChatStartCompanion()");
+    if (!launchCompanionDirectly()) showToast("The CLI companion could not be started. Reinstall the extension to restore its companion executable.", true);
   }
 
   function readState() {
@@ -371,32 +368,13 @@
     if (!prompt || elements.sendButton.disabled || localSending) return;
     localSending = true;
     elements.sendButton.disabled = true;
-    elements.statusText.textContent = "Collecting After Effects context…";
+    elements.statusText.textContent = "Preparing After Effects request…";
     try {
-      var context = {};
-      try {
-        var contextText = await evalHost("aeMcpChatGetContext()", 3500);
-        context = JSON.parse(contextText || "{}");
-      } catch (contextError) {
-        context = { unavailable: String(contextError) };
-        showToast("AE context was unavailable. Sending the prompt without it.", true);
-      }
-      var viewerPath = null;
-      var viewerError = null;
-      if (elements.attachViewer.checked) {
-        var viewerResult = await captureViewerAttachment();
-        viewerPath = viewerResult.path;
-        viewerError = viewerResult.error;
-        if (viewerError) showToast(viewerError + " Sending without the viewer image.", true);
-      }
       queueRequest("send", {
         prompt: prompt,
-        context: context,
-        viewerPath: viewerPath,
         viewerRequested: elements.attachViewer.checked,
-        viewerError: viewerError,
         attachAeUi: elements.attachAeUi.checked,
-        trustAfterEffectsMcp: elements.autonomousMode.checked,
+        trustAfterEffectsMcp: elements.trustAeMcp.checked,
         noApprovalPrompts: elements.autonomousMode.checked
       });
       elements.promptInput.value = "";
@@ -428,41 +406,44 @@
     renderConversation();
   });
   elements.clearButton.addEventListener("click", function () {
-    if (!confirm("Clear the visible Codex conversation and tool history?")) return;
+    if (!confirm("Clear the visible CLI conversation and tool history?")) return;
     queueRequest("clearTranscript", {});
   });
   elements.optionsButton.addEventListener("click", function (event) { event.stopPropagation(); togglePopover(elements.optionsPopover, elements.accountPopover, elements.optionsButton); });
   elements.accountButton.addEventListener("click", function (event) { event.stopPropagation(); togglePopover(elements.accountPopover, elements.optionsPopover, elements.accountButton); });
   elements.switchAccountButton.addEventListener("click", function () {
     var hasAccount = Boolean(state && state.account);
-    if (hasAccount && !confirm("Sign out and choose another Codex account?")) return;
+    if (hasAccount && state.provider !== "pi" && !confirm("Sign out and choose another " + (state.providerName || "CLI") + " account?")) return;
     queueRequest(hasAccount ? "relogin" : "login", {});
     elements.accountPopover.hidden = true;
   });
-  [elements.attachViewer, elements.attachAeUi, elements.autonomousMode].forEach(function (control) {
+  elements.providerSelect.addEventListener("change", function () {
+    queueRequest("selectProvider", { providerId: elements.providerSelect.value });
+    elements.providerSelect.disabled = true;
+  });
+  elements.installProviderButton.addEventListener("click", function () {
+    queueRequest("installProvider", {});
+    elements.accountPopover.hidden = true;
+  });
+  elements.refreshProviderButton.addEventListener("click", function () { queueRequest("status", {}); });
+  elements.providerDocsButton.addEventListener("click", function () { queueRequest("openProviderDocs", {}); });
+  [elements.attachViewer, elements.attachAeUi, elements.trustAeMcp, elements.autonomousMode].forEach(function (control) {
     var saved = localStorage.getItem("aeMcpOption-" + control.id);
-    if (control === elements.autonomousMode) {
-      // Automatic execution is the safe default for this local, AE-scoped MCP.
-      // The user can still disable it explicitly for the current panel session.
-      control.checked = true;
-      localStorage.setItem("aeMcpOption-" + control.id, "true");
-    } else if (saved !== null) control.checked = saved === "true";
+    if (saved !== null) control.checked = saved === "true";
     control.addEventListener("change", function () {
       localStorage.setItem("aeMcpOption-" + control.id, String(control.checked));
       renderAttachmentState();
-      if (control === elements.autonomousMode) {
-        queueRequest("updateSettings", { trustAfterEffectsMcp: control.checked, noApprovalPrompts: control.checked });
+      if (control === elements.trustAeMcp || control === elements.autonomousMode) {
+        queueRequest("updateSettings", { trustAfterEffectsMcp: elements.trustAeMcp.checked, noApprovalPrompts: elements.autonomousMode.checked });
       }
     });
   });
   elements.sendButton.addEventListener("click", sendPrompt);
   elements.stopButton.addEventListener("click", function () {
-    elements.statusText.textContent = "Stopping Codex...";
+    elements.statusText.textContent = "Stopping " + ((state && state.providerName) || "CLI") + "...";
     elements.activityLabel.textContent = "Stopping";
     elements.activityDetail.textContent = "Interrupting the active turn";
     queueRequest("stop", {});
-    lastCompanionLaunch = Date.now();
-    evalHost("aeMcpChatStartCompanion()");
   });
   elements.promptInput.addEventListener("input", autoSizePrompt);
   elements.promptInput.addEventListener("keydown", function (event) {
@@ -498,8 +479,9 @@
     });
     return;
   }
-  queueRequest("updateSettings", { trustAfterEffectsMcp: true, noApprovalPrompts: true });
-  evalHost("aeMcpChatStartCompanion()").then(function () { setTimeout(function () { try { queueRequest("status", {}); } catch (_) {} }, 450); });
+  queueRequest("updateSettings", { trustAfterEffectsMcp: elements.trustAeMcp.checked, noApprovalPrompts: elements.autonomousMode.checked });
+  ensureCompanionAlive();
+  setTimeout(function () { try { queueRequest("status", {}); } catch (_) {} }, 450);
   setInterval(readState, 180);
   setTimeout(readState, 250);
 }());

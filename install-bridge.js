@@ -65,6 +65,7 @@ const developmentChatTarget = path.join(developmentBinFolder, 'chat-host.js');
 const releaseFolder = path.join(process.env.APPDATA || '', 'AfterEffectsMCP');
 const standaloneMcpSource = path.join(__dirname, 'dist', 'after-effects-mcp-extended.exe');
 const standaloneChatSource = path.join(__dirname, 'dist', 'after-effects-codex-chat.exe');
+const piExtensionSource = path.join(__dirname, 'assets', 'pi-after-effects-extension.ts');
 
 // Ensure source script exists
 if (!fs.existsSync(sourceScript)) {
@@ -125,10 +126,16 @@ try {
   // use the self-contained executables and do not require Node.js or npm.
   fs.mkdirSync(developmentBinFolder, { recursive: true });
   fs.copyFileSync(chatHostScript, developmentChatTarget);
+  if (fs.existsSync(piExtensionSource)) {
+    fs.copyFileSync(piExtensionSource, path.join(developmentBinFolder, 'pi-after-effects-extension.ts'));
+  }
   if (fs.existsSync(standaloneMcpSource) && fs.existsSync(standaloneChatSource)) {
     fs.mkdirSync(releaseFolder, { recursive: true });
     fs.copyFileSync(standaloneMcpSource, path.join(releaseFolder, 'after-effects-mcp-extended.exe'));
     fs.copyFileSync(standaloneChatSource, path.join(releaseFolder, 'after-effects-codex-chat.exe'));
+    if (fs.existsSync(piExtensionSource)) {
+      fs.copyFileSync(piExtensionSource, path.join(releaseFolder, 'pi-after-effects-extension.ts'));
+    }
   }
 
   console.log('Bridge script installed successfully!');

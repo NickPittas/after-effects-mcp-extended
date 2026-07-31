@@ -69,6 +69,22 @@ button { color: inherit; }
 
 .brand-copy { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
 .brand-copy strong { font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.provider-select {
+  width: 112px;
+  min-width: 72px;
+  height: 28px;
+  margin-left: auto;
+  padding: 0 24px 0 8px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  outline: 0;
+  background: #242424;
+  color: var(--text);
+  cursor: pointer;
+}
+.provider-select:hover, .provider-select:focus { border-color: #6750a1; }
+.provider-select:disabled { opacity: .6; cursor: default; }
+.provider-select option { background: #242424; color: var(--text); }
 .connection-line { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
 .status-dot.ready { background: var(--green); box-shadow: 0 0 0 2px rgba(75, 212, 123, .12); }
@@ -86,7 +102,7 @@ button { color: inherit; }
   cursor: pointer;
 }
 .icon-button:hover { background: var(--surface-hover); border-color: #5d5d5d; }
-.account-button { color: #dce7ff; font-weight: 650; font-size: 11px; }
+.account-button { margin-left: 0; color: #dce7ff; font-weight: 650; font-size: 11px; }
 
 .toolbar-row {
   height: 34px;
@@ -133,6 +149,7 @@ button { color: inherit; }
 .account-popover span { color: var(--muted); text-transform: capitalize; }
 .secondary-button { width: 100%; margin-top: 8px; border-color: var(--border-strong); background: #202020; color: var(--text); }
 .secondary-button:hover { background: #343434; }
+.secondary-button.quiet { margin-top: 2px; color: var(--muted); background: transparent; }
 .options-popover { top: 80px; padding: 5px; }
 
 .toggle-row {
