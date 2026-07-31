@@ -1,3 +1,6 @@
+#target aftereffects
+#targetengine "session"
+
 // mcp-bridge-auto.jsx
 // Auto-running MCP Bridge panel for After Effects
 
@@ -1281,41 +1284,451 @@ if (typeof JSON.stringify !== "function") {
     })();
 }
 
-// Detect AE version (AE 2025 = version 25.x, AE 2026 = version 26.x)
-var aeVersion = parseFloat(app.version);
-var isAE2025OrLater = aeVersion >= 25.0;
-
-// Always create a floating palette window for AE 2025+
-var panel = new Window("palette", "MCP Bridge Auto", undefined);
+// Use the host-provided Panel when loaded from Scripts/ScriptUI Panels.
+// Fall back to a floating palette only when the script is run directly.
+var panel = (this instanceof Panel)
+    ? this
+    : new Window("palette", "After Effects MCP", undefined, { resizeable: true });
 panel.orientation = "column";
-panel.alignChildren = ["fill", "top"];
-panel.spacing = 10;
-panel.margins = 16;
+panel.alignChildren = ["fill", "fill"];
+panel.spacing = 6;
+panel.margins = 8;
+
+// The bridge is deliberately a single-purpose panel. Chat lives only in the
+// separate CEP extension and no longer appears as a ScriptUI tab.
+var mainTabs = panel.add("group");
+mainTabs.orientation = "column";
+mainTabs.alignment = ["fill", "fill"];
+mainTabs.alignChildren = ["fill", "fill"];
+
+var bridgeTab = mainTabs.add("group");
+bridgeTab.orientation = "column";
+bridgeTab.alignChildren = ["fill", "top"];
+bridgeTab.spacing = 10;
+bridgeTab.margins = 12;
+
+// Keep the legacy controls detached and hidden only so old helper functions
+// remain harmless while this release migrates entirely to CEP.
+var chatTab = panel.add("group");
+chatTab.orientation = "column";
+chatTab.alignChildren = ["fill", "top"];
+chatTab.spacing = 6;
+chatTab.margins = 0;
+chatTab.visible = false;
+chatTab.maximumSize = [0, 0];
 
 // Status display
-var statusText = panel.add("statictext", undefined, "Waiting for commands...");
+var statusText = bridgeTab.add("statictext", undefined, "Waiting for commands...");
 statusText.alignment = ["fill", "top"];
 
 // Add log area
-var logPanel = panel.add("panel", undefined, "Command Log");
+var logPanel = bridgeTab.add("panel", undefined, "Command Log");
 logPanel.orientation = "column";
 logPanel.alignChildren = ["fill", "fill"];
 var logText = logPanel.add("edittext", undefined, "", {multiline: true, readonly: true});
 logText.preferredSize.height = 200;
-
-// AE 2025 warning
-if (isAE2025OrLater) {
-    var warning = panel.add("statictext", undefined, "AE 2025+: Dockable panels are not supported. Floating window only.");
-    warning.graphics.foregroundColor = warning.graphics.newPen(warning.graphics.PenType.SOLID_COLOR, [1,0.3,0,1], 1);
-}
+logText.alignment = ["fill", "fill"];
 
 // Auto-run checkbox
-var autoRunCheckbox = panel.add("checkbox", undefined, "Auto-run commands");
+var autoRunCheckbox = bridgeTab.add("checkbox", undefined, "Automatically execute MCP commands");
 autoRunCheckbox.value = true;
+autoRunCheckbox.helpTip = "Enabled by default. Pending MCP commands are accepted and executed automatically.";
+
+var openCepChatButton = bridgeTab.add("button", undefined, "Open MCP Chat");
+openCepChatButton.helpTip = "Open the dockable CEP/HTML chat panel.";
+openCepChatButton.onClick = function () {
+    var commandId = app.findMenuCommandId("After Effects MCP Chat");
+    if (commandId && commandId > 0) app.executeCommand(commandId);
+    else alert("Open Window > Extensions > After Effects MCP Chat.");
+};
+
+// Codex Chat UI. The panel communicates with the local companion through a
+// small file queue so no network server or Node runtime is needed inside AE.
+var chatStatusGroup = chatTab.add("group");
+chatStatusGroup.orientation = "row";
+chatStatusGroup.alignment = ["fill", "top"];
+chatStatusGroup.alignChildren = ["left", "center"];
+var chatActivityIcon = chatStatusGroup.add("statictext", undefined, "●");
+chatActivityIcon.preferredSize.width = 16;
+var chatStatusText = chatStatusGroup.add("statictext", undefined, "Starting Codex companion...");
+chatStatusText.alignment = ["fill", "center"];
+
+var chatAccountGroup = chatTab.add("group");
+chatAccountGroup.orientation = "row";
+chatAccountGroup.alignment = ["fill", "top"];
+chatAccountGroup.alignChildren = ["left", "center"];
+var chatAccountText = chatAccountGroup.add("statictext", undefined, "Account: checking...");
+chatAccountText.alignment = ["fill", "center"];
+var chatReloginButton = chatAccountGroup.add("button", undefined, "Switch Account");
+
+var chatSetupGroup = chatTab.add("group");
+chatSetupGroup.orientation = "row";
+chatSetupGroup.alignChildren = ["left", "center"];
+var chatLaunchButton = chatSetupGroup.add("button", undefined, "Start Companion");
+var chatInstallButton = chatSetupGroup.add("button", undefined, "Install Codex CLI");
+var chatLoginButton = chatSetupGroup.add("button", undefined, "Sign In");
+var chatRetryButton = chatSetupGroup.add("button", undefined, "Retry");
+
+var chatHelpGroup = chatTab.add("group");
+chatHelpGroup.orientation = "row";
+var chatCopyInstallButton = chatHelpGroup.add("button", undefined, "Copy Install Command");
+var chatInstructionsButton = chatHelpGroup.add("button", undefined, "Official Instructions");
+
+var transcriptPanel = chatTab.add("panel", undefined, "Conversation");
+transcriptPanel.orientation = "column";
+transcriptPanel.alignChildren = ["fill", "fill"];
+transcriptPanel.alignment = ["fill", "fill"];
+transcriptPanel.preferredSize.height = 230;
+transcriptPanel.minimumSize.height = 70;
+var chatRoleLegend = transcriptPanel.add("group");
+chatRoleLegend.orientation = "row";
+chatRoleLegend.alignment = ["fill", "top"];
+var chatYouBadge = chatRoleLegend.add("statictext", undefined, "  YOU  ");
+var chatCodexBadge = chatRoleLegend.add("statictext", undefined, "  CODEX  ");
+var chatSystemBadge = chatRoleLegend.add("statictext", undefined, "  SYSTEM  ");
+setChatControlColors(chatYouBadge, [0.12, 0.17, 0.25, 1], [0.50, 0.72, 1.0, 1]);
+setChatControlColors(chatCodexBadge, [0.12, 0.19, 0.16, 1], [0.45, 0.92, 0.68, 1]);
+setChatControlColors(chatSystemBadge, [0.23, 0.19, 0.10, 1], [1.0, 0.75, 0.32, 1]);
+var chatTranscript = transcriptPanel.add("edittext", undefined, "", { multiline: true, readonly: true, scrolling: true });
+chatTranscript.alignment = ["fill", "fill"];
+chatTranscript.minimumSize.height = 45;
+
+var chatApprovalPanel = chatTab.add("panel", undefined, "Approval Required");
+chatApprovalPanel.orientation = "column";
+chatApprovalPanel.alignChildren = ["fill", "top"];
+chatApprovalPanel.visible = false;
+var chatApprovalText = chatApprovalPanel.add("statictext", undefined, "", { multiline: true });
+chatApprovalText.preferredSize.height = 44;
+var chatApprovalButtons = chatApprovalPanel.add("group");
+var chatApproveButton = chatApprovalButtons.add("button", undefined, "Allow");
+var chatApproveSessionButton = chatApprovalButtons.add("button", undefined, "Allow for Session");
+var chatDeclineButton = chatApprovalButtons.add("button", undefined, "Decline");
+
+var chatAttachGroup = chatTab.add("group");
+chatAttachGroup.orientation = "row";
+var chatAttachViewer = chatAttachGroup.add("checkbox", undefined, "Attach Viewer");
+chatAttachViewer.value = true;
+var chatAttachUi = chatAttachGroup.add("checkbox", undefined, "Attach AE UI");
+chatAttachUi.value = false;
+var chatTrustAeMcp = chatAttachGroup.add("checkbox", undefined, "No Permission Prompts");
+chatTrustAeMcp.value = true;
+chatTrustAeMcp.helpTip = "Run the dedicated AE chat in autonomous mode. Codex will not ask for MCP, command, or file approvals; operations blocked by its sandbox will fail instead.";
+
+var chatPrompt = chatTab.add("edittext", undefined, "", { multiline: true, scrolling: true });
+chatPrompt.preferredSize.height = 72;
+chatPrompt.alignment = ["fill", "top"];
+
+var chatActionGroup = chatTab.add("group");
+chatActionGroup.orientation = "row";
+chatActionGroup.alignment = ["fill", "top"];
+var chatSendButton = chatActionGroup.add("button", undefined, "Send");
+var chatStopButton = chatActionGroup.add("button", undefined, "Stop");
+var chatLatestButton = chatActionGroup.add("button", undefined, "Latest");
+var chatClearButton = chatActionGroup.add("button", undefined, "Clear View");
+
+var chatInstallCommand = "powershell -ExecutionPolicy Bypass -c \"irm https://chatgpt.com/codex/install.ps1 | iex\"";
+var lastChatStateTimestamp = "";
+var lastChatState = null;
+var chatFollowTranscript = true;
+
+function setChatControlColors(control, background, foreground) {
+    try {
+        if (background) control.graphics.backgroundColor = control.graphics.newBrush(control.graphics.BrushType.SOLID_COLOR, background);
+        if (foreground) control.graphics.foregroundColor = control.graphics.newPen(control.graphics.PenType.SOLID_COLOR, foreground, 1);
+    } catch (_chatColorError) {}
+}
+
+function renderChatTranscript(transcript) {
+    transcript = transcript || [];
+    var lines = [];
+    for (var i = 0; i < transcript.length; i++) {
+        var entry = transcript[i];
+        var role = entry.role === "assistant" ? "CODEX" : (entry.role === "user" ? "YOU" : "SYSTEM");
+        var marker = entry.role === "assistant" ? "[ CODEX ]" : (entry.role === "user" ? "[ YOU ]" : "[ SYSTEM ]");
+        lines.push(marker);
+        lines.push(entry.text || (entry.role === "assistant" ? "…" : ""));
+        lines.push("────────────────────────────────");
+        lines.push("");
+    }
+    if (!lines.length) lines.push("Your conversation will appear here.");
+    var newText = lines.join("\n");
+    if (chatTranscript.text !== newText) chatTranscript.text = newText;
+    if (chatFollowTranscript) {
+        try { chatTranscript.selection = [newText.length, newText.length]; } catch (_chatBottomFollowError) {}
+    }
+}
+
+try {
+    chatTranscript.addEventListener("mousewheel", function () { chatFollowTranscript = false; });
+    chatTranscript.addEventListener("mousedown", function () { chatFollowTranscript = false; });
+} catch (_chatWheelError) {}
+
+function getChatFolder() {
+    var folder = new Folder(Folder.myDocuments.fsName + "/ae-mcp-bridge/codex-chat");
+    if (!folder.exists) folder.create();
+    return folder;
+}
+
+function getChatRequestFolder() {
+    var folder = new Folder(getChatFolder().fsName + "/requests");
+    if (!folder.exists) folder.create();
+    return folder;
+}
+
+function getChatAttachmentFolder() {
+    var folder = new Folder(getChatFolder().fsName + "/attachments");
+    if (!folder.exists) folder.create();
+    return folder;
+}
+
+function queueChatRequest(action, data) {
+    data = data || {};
+    data.id = String((new Date()).getTime()) + "-" + String(Math.floor(Math.random() * 100000));
+    data.action = action;
+    var requestFile = new File(getChatRequestFolder().fsName + "/" + data.id + ".json");
+    requestFile.encoding = "UTF-8";
+    if (!requestFile.open("w")) throw new Error("Unable to write the Codex Chat request.");
+    requestFile.write(JSON.stringify(data, null, 2));
+    requestFile.close();
+}
+
+function chatContextSnapshot() {
+    var context = {
+        projectFile: app.project && app.project.file ? app.project.file.fsName : null,
+        activeItem: null,
+        composition: null,
+        time: null,
+        selectedLayers: []
+    };
+    var item = app.project ? app.project.activeItem : null;
+    if (item) context.activeItem = item.name;
+    if (item && item instanceof CompItem) {
+        context.composition = {
+            name: item.name,
+            id: item.id,
+            width: item.width,
+            height: item.height,
+            frameRate: item.frameRate,
+            duration: item.duration
+        };
+        context.time = item.time;
+        var selected = item.selectedLayers;
+        for (var i = 0; i < selected.length; i++) {
+            var layerInfo = { name: selected[i].name, index: selected[i].index, selectedProperties: [] };
+            try {
+                var properties = selected[i].selectedProperties;
+                for (var p = 0; p < properties.length; p++) {
+                    layerInfo.selectedProperties.push({ name: properties[p].name, matchName: properties[p].matchName });
+                }
+            } catch (_propertyError) {}
+            context.selectedLayers.push(layerInfo);
+        }
+    }
+    return context;
+}
+
+function captureViewerForChat() {
+    var comp = app.project ? app.project.activeItem : null;
+    if (!(comp && comp instanceof CompItem)) return null;
+    var folder = getChatAttachmentFolder();
+    var safeName = comp.name.replace(/[\\\/:*?"<>|]/g, "_");
+    var output = new File(folder.fsName + "/viewer-" + safeName + "-" + String((new Date()).getTime()) + ".png");
+    comp.saveFrameToPng(comp.time, output);
+    return output.fsName;
+}
+
+function findChatCompanion() {
+    var candidates = [];
+    try { candidates.push(new File($.fileName).parent.fsName + "/after-effects-codex-chat.exe"); } catch (_scriptPathError) {}
+    candidates.push(Folder.userData.fsName + "/AfterEffectsMCP/after-effects-codex-chat.exe");
+    candidates.push(Folder.myDocuments.fsName + "/ae-mcp-bridge/bin/after-effects-codex-chat.exe");
+    for (var i = 0; i < candidates.length; i++) {
+        var file = new File(candidates[i]);
+        if (file.exists) return file;
+    }
+    return null;
+}
+
+function startChatCompanion() {
+    var companion = findChatCompanion();
+    if (companion) {
+        var hiddenCompanionPath = companion.fsName.replace(/'/g, "''");
+        system.callSystem("powershell.exe -NoProfile -WindowStyle Hidden -Command \"Start-Process -FilePath '" + hiddenCompanionPath + "' -WindowStyle Hidden\"");
+        chatStatusText.text = "Starting Codex companion...";
+        return true;
+    }
+
+    // Developer fallback. Release packages always use the self-contained EXE.
+    var developerHost = new File(Folder.myDocuments.fsName + "/ae-mcp-bridge/bin/chat-host.js");
+    var developerNode = new File("C:/Program Files/nodejs/node.exe");
+    if (developerHost.exists && developerNode.exists) {
+        var hiddenNodePath = developerNode.fsName.replace(/'/g, "''");
+        var hiddenHostPath = developerHost.fsName.replace(/'/g, "''");
+        system.callSystem("powershell.exe -NoProfile -WindowStyle Hidden -Command \"Start-Process -FilePath '" + hiddenNodePath + "' -ArgumentList '" + hiddenHostPath + "' -WindowStyle Hidden\"");
+        chatStatusText.text = "Starting development companion...";
+        return true;
+    }
+
+    chatStatusText.text = "Codex companion is not installed";
+    return false;
+}
+
+function renderChatState(state) {
+    chatLaunchButton.visible = state.hostStatus !== "ready";
+    chatInstallButton.visible = state.cliStatus === "missing";
+    chatCopyInstallButton.visible = state.cliStatus === "missing";
+    chatInstructionsButton.visible = state.cliStatus === "missing";
+    chatLoginButton.visible = state.cliStatus === "signedOut";
+    chatReloginButton.visible = state.cliStatus === "ready" && state.account !== null && state.account !== undefined;
+    chatRetryButton.visible = state.cliStatus === "missing" || state.cliStatus === "signedOut" || state.hostStatus === "error";
+    chatSendButton.enabled = state.cliStatus === "ready" && !state.busy;
+    chatStopButton.enabled = state.busy === true;
+    if (state.noApprovalPrompts !== undefined) chatTrustAeMcp.value = state.noApprovalPrompts === true;
+
+    if (state.account) {
+        var planSuffix = state.account.planType ? " · " + state.account.planType : "";
+        chatAccountText.text = "Account: " + (state.account.email || state.account.label || state.account.type) + planSuffix;
+        chatAccountText.helpTip = "Signed in through Codex CLI";
+    } else {
+        chatAccountText.text = state.cliStatus === "signedOut" ? "Account: not signed in" : "Account: checking...";
+        chatAccountText.helpTip = "";
+    }
+
+    chatApprovalPanel.visible = state.approval !== null && state.approval !== undefined;
+    if (state.approval) {
+        chatApprovalText.text = (state.approval.summary || "Approval required") + "\n" + (state.approval.details || "");
+        var labels = state.approval.buttonLabels || {};
+        chatApproveButton.text = labels.accept || "Allow";
+        chatApproveSessionButton.text = labels.session || "Allow for Session";
+        chatApproveSessionButton.visible = state.approval.method !== "item/tool/requestUserInput" || !!labels.session;
+        chatDeclineButton.text = labels.decline || "Decline";
+    }
+    try { chatTab.layout.layout(true); } catch (_chatLayoutError) {}
+    renderChatTranscript(state.transcript || []);
+    try { chatTab.layout.layout(true); } catch (_chatLayoutAfterTranscriptError) {}
+}
+
+function renderChatActivityAnimation(state) {
+    if (!state) return;
+    var activity = state.activity || {};
+    var busy = state.busy === true;
+    var frame = Math.floor((new Date()).getTime() / 220) % 4;
+    var frames = ["·", "●", "◉", "●"];
+    var icon = busy ? frames[frame] : (activity.kind === "error" ? "!" : (state.cliStatus === "signedOut" ? "○" : "●"));
+    var color = activity.kind === "error" ? [1.0, 0.35, 0.32, 1] :
+        (activity.kind === "afterEffects" ? [0.62, 0.52, 1.0, 1] :
+        (activity.kind === "command" || activity.kind === "files" ? [1.0, 0.72, 0.28, 1] :
+        (busy ? [0.35, 0.78, 1.0, 1] : [0.35, 0.88, 0.55, 1])));
+    chatActivityIcon.text = icon;
+    setChatControlColors(chatActivityIcon, null, color);
+    var label = activity.label || state.statusText || "Codex Chat";
+    if (activity.detail) label += " · " + activity.detail;
+    chatStatusText.text = label;
+}
+
+function refreshChatState() {
+    // The ScriptUI chat was replaced by the CEP panel. Keep this no-op so any
+    // timer left by an older loaded panel instance becomes harmless.
+    return;
+    try {
+        var stateFile = new File(getChatFolder().fsName + "/state.json");
+        if (!stateFile.exists) return;
+        stateFile.encoding = "UTF-8";
+        if (!stateFile.open("r")) return;
+        var content = stateFile.read();
+        stateFile.close();
+        var state = JSON.parse(content);
+        lastChatState = state;
+        if (state.updatedAt !== lastChatStateTimestamp) {
+            lastChatStateTimestamp = state.updatedAt;
+            renderChatState(state);
+        }
+        renderChatActivityAnimation(state);
+    } catch (_chatStateError) {}
+}
+
+chatLaunchButton.onClick = function () { startChatCompanion(); };
+chatRetryButton.onClick = function () {
+    if (!startChatCompanion()) return;
+    queueChatRequest("status", {});
+};
+chatInstallButton.onClick = function () {
+    if (!confirm("Install Codex CLI using the official OpenAI standalone installer?\n\n" + chatInstallCommand + "\n\nThis does not require Node.js or npm.")) return;
+    if (!startChatCompanion()) return;
+    queueChatRequest("installCodex", {});
+};
+chatLoginButton.onClick = function () { queueChatRequest("login", {}); };
+chatReloginButton.onClick = function () {
+    if (!confirm("Sign out of the current Codex account and choose another account?")) return;
+    queueChatRequest("relogin", {});
+};
+chatCopyInstallButton.onClick = function () {
+    var escaped = chatInstallCommand.replace(/'/g, "''");
+    system.callSystem("powershell -NoProfile -Command \"Set-Clipboard -Value '" + escaped + "'\"");
+    chatStatusText.text = "Install command copied";
+};
+chatInstructionsButton.onClick = function () {
+    system.callSystem('cmd /c start "" "https://learn.chatgpt.com/docs/codex/cli"');
+};
+chatSendButton.onClick = function () {
+    var promptText = chatPrompt.text;
+    if (!promptText || !promptText.replace(/\s/g, "")) {
+        alert("Enter a message first.");
+        return;
+    }
+    var viewerPath = null;
+    if (chatAttachViewer.value) {
+        try { viewerPath = captureViewerForChat(); }
+        catch (captureError) { alert("Viewer capture failed: " + captureError.toString()); return; }
+    }
+    chatFollowTranscript = true;
+    queueChatRequest("send", {
+        prompt: promptText,
+        context: chatContextSnapshot(),
+        viewerPath: viewerPath,
+        attachAeUi: chatAttachUi.value,
+        trustAfterEffectsMcp: chatTrustAeMcp.value,
+        noApprovalPrompts: chatTrustAeMcp.value
+    });
+    chatPrompt.text = "";
+    chatStatusText.text = "Sending to Codex...";
+};
+chatStopButton.onClick = function () { queueChatRequest("stop", {}); };
+chatLatestButton.onClick = function () {
+    chatFollowTranscript = true;
+    if (lastChatState) renderChatTranscript(lastChatState.transcript || []);
+};
+chatClearButton.onClick = function () { chatFollowTranscript = true; queueChatRequest("clearTranscript", {}); };
+chatApproveButton.onClick = function () { queueChatRequest("approval", { decision: "accept" }); };
+chatApproveSessionButton.onClick = function () { queueChatRequest("approval", { decision: "acceptForSession" }); };
+chatDeclineButton.onClick = function () { queueChatRequest("approval", { decision: "decline" }); };
+chatTrustAeMcp.onClick = function () {
+    queueChatRequest("updateSettings", {
+        trustAfterEffectsMcp: chatTrustAeMcp.value,
+        noApprovalPrompts: chatTrustAeMcp.value
+    });
+};
 
 // Check interval (ms)
-var checkInterval = 2000;
+var checkInterval = 750;
 var isChecking = false;
+var lastBridgeCommand = "";
+
+function writeBridgeHeartbeat(stateName) {
+    try {
+        var heartbeat = new File(Folder.myDocuments.fsName + "/ae-mcp-bridge/ae_bridge_status.json");
+        heartbeat.encoding = "UTF-8";
+        if (!heartbeat.open("w")) return;
+        heartbeat.write(JSON.stringify({
+            version: "1.9.10",
+            state: stateName || (isChecking ? "checking" : "ready"),
+            autoRun: autoRunCheckbox.value === true,
+            lastCommand: lastBridgeCommand,
+            updatedAt: (new Date()).toISOString ? (new Date()).toISOString() : String((new Date()).getTime())
+        }, null, 2));
+        heartbeat.close();
+    } catch (_heartbeatError) {}
+}
 
 // Command file path - use Documents folder for reliable access
 function getCommandFilePath() {
@@ -2861,6 +3274,7 @@ function aeLayerCommand(args) {
     throw new Error("Unsupported layer action: " + args.action);
 }
 
+
 function aeCompositionCommand(args) {
     if (args.action === "create") {
         var created = app.project.items.addComp(args.name || "Composition", args.width || 1920, args.height || 1080, args.pixelAspect || 1, args.duration || 10, args.frameRate || 25);
@@ -3869,12 +4283,18 @@ function aeCommand(args) {
 }
 
 // Execute command
-function executeCommand(command, args) {
+function executeCommand(command, args, commandId) {
     var result = "";
 
     logToPanel("Executing command: " + command);
     statusText.text = "Running: " + command;
-    panel.update();
+    // Window has update(), but a docked ScriptUI Panel does not. Calling it
+    // unconditionally aborts command execution after the bridge reads the
+    // command file, leaving the MCP client waiting for a result.
+    try {
+        if (panel instanceof Window && panel.update) panel.update();
+        else panel.layout.layout(true);
+    } catch (_panelRefreshError) {}
 
     try {
         logToPanel("Attempting to execute: " + command); // Log before switch
@@ -3994,6 +4414,7 @@ function executeCommand(command, args) {
             // Add a timestamp to help identify if we're getting fresh results
             resultObj._responseTimestamp = (new Date()).getTime();
             resultObj._commandExecuted = command;
+            resultObj._commandId = commandId || null;
             resultString = JSON.stringify(resultObj, null, 2);
             logToPanel("Added timestamp to result JSON for tracking freshness.");
         } catch (parseError) {
@@ -4029,7 +4450,7 @@ function executeCommand(command, args) {
         
         // Update command file status
         logToPanel("Updating command status to completed...");
-        updateCommandStatus("completed");
+        updateCommandStatus("completed", commandId);
         logToPanel("Command status updated.");
         
     } catch (error) {
@@ -4043,6 +4464,7 @@ function executeCommand(command, args) {
             var errorResult = JSON.stringify({ 
                 status: "error", 
                 command: command,
+                _commandId: commandId || null,
                 message: error.toString(),
                 line: error.line,
                 fileName: error.fileName
@@ -4062,13 +4484,13 @@ function executeCommand(command, args) {
         
         // Update command file status even after error
         logToPanel("Updating command status to error...");
-        updateCommandStatus("error");
+        updateCommandStatus("error", commandId);
         logToPanel("Command status updated to error.");
     }
 }
 
 // Update command file status
-function updateCommandStatus(status) {
+function updateCommandStatus(status, commandId) {
     try {
         var commandFile = new File(getCommandFilePath());
         if (commandFile.exists) {
@@ -4078,6 +4500,10 @@ function updateCommandStatus(status) {
             
             if (content) {
                 var commandData = JSON.parse(content);
+                if (commandId && commandData.id && commandData.id !== commandId) {
+                    logToPanel("Skipped status update for a newer queued command.");
+                    return;
+                }
                 commandData.status = status;
                 
                 commandFile.open("w");
@@ -4098,6 +4524,7 @@ function logToPanel(message) {
 
 // Check for new commands
 function checkForCommands() {
+    writeBridgeHeartbeat(autoRunCheckbox.value ? "ready" : "paused");
     if (!autoRunCheckbox.value || isChecking) return;
     
     isChecking = true;
@@ -4116,11 +4543,12 @@ function checkForCommands() {
                 
                 // Only execute pending commands
                 if (commandData.status === "pending") {
+                    lastBridgeCommand = commandData.command || "unknown";
                     // Update status to running
-                    updateCommandStatus("running");
+                    updateCommandStatus("running", commandData.id);
                     
                     // Execute the command
-                    executeCommand(commandData.command, commandData.args || {});
+                    executeCommand(commandData.command, commandData.args || {}, commandData.id);
                 }
             }
         }
@@ -4129,15 +4557,33 @@ function checkForCommands() {
     }
     
     isChecking = false;
+    writeBridgeHeartbeat("ready");
 }
 
 // Set up timer to check for commands
 function startCommandChecker() {
-    app.scheduleTask("checkForCommands()", checkInterval, true);
+    try {
+        if ($.global.__aeMcpBridgeCommandTaskId) {
+            try { app.cancelTask($.global.__aeMcpBridgeCommandTaskId); } catch (_cancelOldTaskError) {}
+        }
+        $.global.__aeMcpBridgeTick = function () {
+            try { checkForCommands(); }
+            catch (error) {
+                isChecking = false;
+                logToPanel("Bridge timer error: " + error.toString());
+                writeBridgeHeartbeat("error");
+            }
+        };
+        $.global.__aeMcpBridgeCommandTaskId = app.scheduleTask("$.global.__aeMcpBridgeTick()", checkInterval, true);
+        checkForCommands();
+    } catch (error) {
+        logToPanel("Unable to start bridge timer: " + error.toString());
+        writeBridgeHeartbeat("error");
+    }
 }
 
 // Add manual check button
-var checkButton = panel.add("button", undefined, "Check for Commands Now");
+var checkButton = bridgeTab.add("button", undefined, "Check for Commands Now");
 checkButton.onClick = function() {
     logToPanel("Manually checking for commands");
     checkForCommands();
@@ -4151,7 +4597,21 @@ statusText.text = "Ready - Auto-run is " + (autoRunCheckbox.value ? "ON" : "OFF"
 // Start the command checker
 startCommandChecker();
 
-// Show the panel
-panel.center();
-panel.show();
+panel.onResizing = panel.onResize = function() {
+    this.layout.resize();
+    try {
+        var compactChat = this.size && this.size.height < 430;
+        chatPrompt.preferredSize.height = compactChat ? 46 : 72;
+        if (lastChatState) renderChatTranscript(lastChatState.transcript || []);
+    } catch (_chatResizeError) {}
+};
+
+// A host-provided ScriptUI Panel is already visible through the Window menu.
+// A directly executed script still opens as a resizable floating palette.
+if (panel instanceof Window) {
+    panel.center();
+    panel.show();
+} else {
+    panel.layout.layout(true);
+}
 

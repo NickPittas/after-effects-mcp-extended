@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ExtensionManifest Version="7.0"
+    ExtensionBundleId="com.nickpittas.aftereffectsmcpextended"
+    ExtensionBundleVersion="1.9.10"
+    ExtensionBundleName="After Effects MCP Extended">
+    <ExtensionList>
+        <Extension Id="com.nickpittas.aftereffectsmcpextended.chat" Version="1.9.10" />
+    </ExtensionList>
+    <ExecutionEnvironment>
+        <HostList>
+            <Host Name="AEFT" Version="[17.0,99.9]" />
+        </HostList>
+        <LocaleList>
+            <Locale Code="All" />
+        </LocaleList>
+        <RequiredRuntimeList>
+            <RequiredRuntime Name="CSXS" Version="9.0" />
+        </RequiredRuntimeList>
+    </ExecutionEnvironment>
+    <DispatchInfoList>
+        <Extension Id="com.nickpittas.aftereffectsmcpextended.chat">
+            <DispatchInfo>
+                <Resources>
+                    <MainPath>./index.html</MainPath>
+                    <ScriptPath>./jsx/host.jsx</ScriptPath>
+                    <CEFCommandLine>
+                        <Parameter>--high-dpi-support=1</Parameter>
+                        <Parameter>--allow-file-access-from-files</Parameter>
+                        <Parameter>--disable-pinch</Parameter>
+                    </CEFCommandLine>
+                </Resources>
+                <Lifecycle>
+                    <AutoVisible>true</AutoVisible>
+                </Lifecycle>
+                <UI>
+                    <Type>Panel</Type>
+                    <Menu>After Effects MCP Chat</Menu>
+                    <Geometry>
+                        <Size>
+                            <Width>420</Width>
+                            <Height>680</Height>
+                        </Size>
+                        <MinSize>
+                            <Width>300</Width>
+                            <Height>280</Height>
+                        </MinSize>
+                        <MaxSize>
+                            <Width>1800</Width>
+                            <Height>2200</Height>
+                        </MaxSize>
+                    </Geometry>
+                </UI>
+            </DispatchInfo>
+        </Extension>
+    </DispatchInfoList>
+</ExtensionManifest>

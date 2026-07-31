@@ -59,6 +59,12 @@ const destinationFolder = isMac
   ? path.join(afterEffectsPath, 'Scripts', 'ScriptUI Panels')
   : path.join(afterEffectsPath, 'Support Files', 'Scripts', 'ScriptUI Panels');
 const destinationScript = path.join(destinationFolder, 'mcp-bridge-auto.jsx');
+const chatHostScript = path.join(__dirname, 'build', 'chat-host.js');
+const developmentBinFolder = path.join(process.env.USERPROFILE || '', 'Documents', 'ae-mcp-bridge', 'bin');
+const developmentChatTarget = path.join(developmentBinFolder, 'chat-host.js');
+const releaseFolder = path.join(process.env.APPDATA || '', 'AfterEffectsMCP');
+const standaloneMcpSource = path.join(__dirname, 'dist', 'after-effects-mcp-extended.exe');
+const standaloneChatSource = path.join(__dirname, 'dist', 'after-effects-codex-chat.exe');
 
 // Ensure source script exists
 if (!fs.existsSync(sourceScript)) {
@@ -113,6 +119,16 @@ try {
     !fs.readFileSync(sourceScript).equals(fs.readFileSync(destinationScript))
   ) {
     throw new Error('Bridge copy verification failed: installed file differs from the build output.');
+  }
+
+  // Keep a development fallback for this workstation, while release installs
+  // use the self-contained executables and do not require Node.js or npm.
+  fs.mkdirSync(developmentBinFolder, { recursive: true });
+  fs.copyFileSync(chatHostScript, developmentChatTarget);
+  if (fs.existsSync(standaloneMcpSource) && fs.existsSync(standaloneChatSource)) {
+    fs.mkdirSync(releaseFolder, { recursive: true });
+    fs.copyFileSync(standaloneMcpSource, path.join(releaseFolder, 'after-effects-mcp-extended.exe'));
+    fs.copyFileSync(standaloneChatSource, path.join(releaseFolder, 'after-effects-codex-chat.exe'));
   }
 
   console.log('Bridge script installed successfully!');

@@ -10,7 +10,7 @@ import { fileURLToPath } from 'url';
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.0.0"
+  version: "1.8.0"
 });
 
 // ES Modules replacement for __dirname
@@ -75,7 +75,7 @@ function readResultsFromTempFile(): string {
 }
 
 // Helper to wait for a fresh result produced by a specific command
-async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number = 5000, pollMs: number = 250): Promise<string> {
+async function waitForBridgeResult(expectedCommand?: string, expectedCommandId?: string, timeoutMs: number = 5000, pollMs: number = 250): Promise<string> {
   const start = Date.now();
   const resultPath = path.join(getAETempDir(), 'ae_mcp_result.json');
   let lastSize = -1;
@@ -89,9 +89,12 @@ async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number =
           try {
             const parsed = JSON.parse(content);
             if (
-              !expectedCommand ||
-              parsed._commandExecuted === expectedCommand ||
-              (parsed.status && parsed.status !== "waiting")
+              (expectedCommandId && parsed._commandId === expectedCommandId && parsed.status !== "waiting") ||
+              (!expectedCommandId && (
+                !expectedCommand ||
+                parsed._commandExecuted === expectedCommand ||
+                (parsed.status && parsed.status !== "waiting")
+              ))
             ) {
               return content;
             }
@@ -109,30 +112,38 @@ async function waitForBridgeResult(expectedCommand?: string, timeoutMs: number =
 }
 
 // Helper function to write command to file
-function writeCommandFile(command: string, args: Record<string, any> = {}): void {
+function createBridgeCommandId(): string {
+  return `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
+}
+
+function writeCommandFile(command: string, args: Record<string, any> = {}, commandId?: string): string {
   try {
     const commandFile = path.join(getAETempDir(), 'ae_command.json');
     const commandData = {
       command,
+      id: commandId || createBridgeCommandId(),
       args,
       timestamp: new Date().toISOString(),
       status: "pending"  // pending, running, completed, error
     };
     fs.writeFileSync(commandFile, JSON.stringify(commandData, null, 2));
     console.error(`Command "${command}" written to ${commandFile}`);
+    return commandData.id;
   } catch (error) {
     console.error("Error writing command file:", error);
+    throw error;
   }
 }
 
 // Helper function to clear the results file to avoid stale cache
-function clearResultsFile(): void {
+function clearResultsFile(commandId?: string): void {
   try {
     const resultFile = path.join(getAETempDir(), 'ae_mcp_result.json');
     
     // Write a placeholder message to indicate the file is being reset
     const resetData = {
       status: "waiting",
+      _commandId: commandId || null,
       message: "Waiting for new result from After Effects...",
       timestamp: new Date().toISOString()
     };
@@ -144,15 +155,61 @@ function clearResultsFile(): void {
   }
 }
 
+async function acquireBridgeLock(timeoutMs: number): Promise<() => void> {
+  const lockPath = path.join(getAETempDir(), "ae_command.lock");
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    try {
+      const descriptor = fs.openSync(lockPath, "wx");
+      fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+      fs.closeSync(descriptor);
+      return () => {
+        try {
+          const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+          if (Number(lock.pid) === process.pid) fs.unlinkSync(lockPath);
+        } catch {}
+      };
+    } catch (error: any) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        const lock = JSON.parse(fs.readFileSync(lockPath, "utf8"));
+        const ownerPid = Number(lock.pid);
+        let ownerAlive = ownerPid > 0;
+        try { if (ownerAlive) process.kill(ownerPid, 0); } catch { ownerAlive = false; }
+        if (!ownerAlive) {
+          fs.unlinkSync(lockPath);
+          continue;
+        }
+      } catch {
+        try {
+          const age = Date.now() - fs.statSync(lockPath).mtimeMs;
+          if (age > 30000) {
+            fs.unlinkSync(lockPath);
+            continue;
+          }
+        } catch {}
+      }
+      await new Promise(resolve => setTimeout(resolve, 150));
+    }
+  }
+  throw new Error("Another After Effects command is still in progress.");
+}
+
 // Add a resource to expose project compositions
 server.resource(
   "compositions",
   "aftereffects://compositions",
   async (uri) => {
-    // Clear old results, queue the command, and wait for bridge output
-    clearResultsFile();
-    writeCommandFile("listCompositions", {});
-    const result = await waitForBridgeResult("listCompositions", 6000, 250);
+    const releaseBridge = await acquireBridgeLock(10000);
+    let result: string;
+    try {
+      const commandId = createBridgeCommandId();
+      clearResultsFile(commandId);
+      writeCommandFile("listCompositions", {}, commandId);
+      result = await waitForBridgeResult("listCompositions", commandId, 6000, 250);
+    } finally {
+      releaseBridge();
+    }
 
     return {
       contents: [{
@@ -990,13 +1047,16 @@ server.tool(
     )
   },
   async ({ operation, action, parameters = {} }) => {
+    let releaseBridge: (() => void) | null = null;
     try {
-      clearResultsFile();
-      writeCommandFile("aeCommand", { operation, action, ...parameters });
       const timeoutMs = operation === "render" && action === "render"
         ? Number(parameters.timeoutMs || 3600000)
         : 15000;
-      const result = await waitForBridgeResult("aeCommand", timeoutMs, 250);
+      releaseBridge = await acquireBridgeLock(timeoutMs + 15000);
+      const commandId = createBridgeCommandId();
+      clearResultsFile(commandId);
+      writeCommandFile("aeCommand", { operation, action, ...parameters }, commandId);
+      const result = await waitForBridgeResult("aeCommand", commandId, timeoutMs, 250);
       const content: any[] = [{ type: "text", text: result }];
 
       if (operation === "frame" && action === "capture") {
@@ -1021,6 +1081,8 @@ server.tool(
         content: [{ type: "text", text: `After Effects command failed: ${String(error)}` }],
         isError: true
       };
+    } finally {
+      if (releaseBridge) releaseBridge();
     }
   }
 );

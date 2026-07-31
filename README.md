@@ -19,6 +19,9 @@ Extended capabilities include:
 - Project import, organization, saving, render-queue operations, and PNG frame capture
 - Text animators with character, word, and line range selectors
 - Improved bridge response tracking and direct rendered-frame image returns
+- Dockable, resizable ScriptUI bridge panel
+- Dockable CEP/HTML Codex Chat panel with persistent streamed conversations, color-coded message bubbles, a one-click tool-event filter, bottom-follow scrolling, live activity, signed-in account display and switching, viewer/UI screenshot cards, responsive sizing, Stop, and a no-permission-prompts autonomous mode
+- Standalone Windows MCP and chat executables; release users do not need Node.js or npm
 
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
 ![Build](https://img.shields.io/badge/build-passing-success)
@@ -82,39 +85,60 @@ Extended capabilities include:
 ## ⚙️ Setup Instructions
 
 ### 🛠 Prerequisites
+
+For a release install:
+
 - Adobe After Effects (2022 or later)
-- Node.js (v14 or later)
-- npm or yarn package manager
+- Windows PowerShell, included with Windows
+- A Codex account; the panel can install Codex CLI and start sign-in
+
+Node.js and npm are only required for developing or rebuilding the project.
 
 ### 📥 Installation
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/Dakkshin/after-effects-mcp.git
-   cd after-effects-mcp
-   ```
+Release users download and double-click
+`AfterEffectsMCP-Extended-Setup-<version>.exe`. The one-file Windows setup asks
+for administrator permission once, detects installed After Effects versions,
+and installs all three components:
 
-2. **Install dependencies**
-   ```bash
-   npm install
-   # or
-   yarn install
-   ```
+- The standalone MCP server and automatic Codex MCP registration
+- The dockable **After Effects MCP Chat** CEP panel
+- The `mcp-bridge-auto.jsx` command bridge for each detected AE installation
 
-3. **Build the project**
-   ```bash
-   npm run build
-   # or
-   yarn build
-   ```
+The setup also adds **After Effects MCP Extended** to Windows Installed Apps so
+it can be removed normally. It does not require Node.js or npm. Restart After
+Effects after installation, open **Window > mcp-bridge-auto.jsx**, then open
+**Window > Extensions > After Effects MCP Chat**.
 
-4. **Install the After Effects panel**
-   ```bash
-   npm run install-bridge
-   # or
-   yarn install-bridge
-   ```
-   This will copy the necessary scripts to your After Effects installation.
+If Codex CLI is missing, choose **Install Codex CLI**. The panel shows the exact
+official standalone installer command before running it. This installation does
+not use Node.js or npm. If Codex is installed but signed out, choose **Sign In**.
+
+Developers can build and install from source:
+
+```bash
+git clone https://github.com/NickPittas/after-effects-mcp-extended.git
+cd after-effects-mcp-extended
+npm install
+npm run build
+npm run build:standalone
+npm run install:standalone
+```
+
+For CEP-only development updates, use `npm run install:cep`.
+
+To build the single-file Windows setup from source, run:
+
+```bash
+npm run build:installer
+```
+
+The installer and its SHA-256 checksum are written to `release/`.
+
+`npm run build:standalone` creates:
+
+- `dist/after-effects-mcp-extended.exe`
+- `dist/after-effects-codex-chat.exe`
 
 ### 🔧 Update MCP Config
 
@@ -242,15 +266,16 @@ You can animate layers with:
 ### 🧩 Project Structure
 
 - `src/index.ts`: MCP server implementation
+- `src/chat-host.ts`: Codex app-server client and AE Chat companion
 - `src/scripts/mcp-bridge-auto.jsx`: Main After Effects panel script
 - `install-bridge.js`: Script to install the panel in After Effects
+- `install-standalone.ps1`: Node-free Windows release installer
 
 ### 📦 Building the Project
 
 ```bash
 npm run build
-# or
-yarn build
+npm run build:standalone
 ```
 
 **Note:** This project uses esbuild for fast builds, replacing the previous TypeScript compiler approach that could run out of memory on larger codebases.
