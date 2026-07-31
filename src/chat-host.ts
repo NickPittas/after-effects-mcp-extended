@@ -17,6 +17,7 @@ import {
   type CliProviderId,
   type ProviderSnapshot,
 } from "./cli-providers.js";
+import { AE_HARNESS_SYSTEM_PROMPT } from "./ae-harness-prompt.js";
 
 type TranscriptRole = "user" | "assistant" | "system";
 
@@ -91,7 +92,7 @@ type ChatRequest = {
   providerId?: CliProviderId;
 };
 
-const VERSION = "1.10.0";
+const VERSION = "1.10.1";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -101,6 +102,7 @@ const LOCK_PATH = path.join(CHAT_DIR, "host.lock");
 const LOG_PATH = path.join(CHAT_DIR, "host.log");
 const MCP_CONFIG_PATH = path.join(CHAT_DIR, "provider-mcp.json");
 const PI_SESSION_DIR = path.join(CHAT_DIR, "pi-sessions");
+const AE_SYSTEM_PROMPT_PATH = path.join(CHAT_DIR, "after-effects-system-prompt.md");
 const AE_BRIDGE_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge");
 const AE_COMMAND_PATH = path.join(AE_BRIDGE_DIR, "ae_command.json");
 const AE_RESULT_PATH = path.join(AE_BRIDGE_DIR, "ae_mcp_result.json");
@@ -109,6 +111,9 @@ const AE_HEARTBEAT_PATH = path.join(AE_BRIDGE_DIR, "ae_bridge_status.json");
 
 for (const directory of [CHAT_DIR, REQUEST_DIR, ATTACHMENT_DIR, PI_SESSION_DIR]) {
   fs.mkdirSync(directory, { recursive: true });
+}
+for (const instructionName of ["after-effects-system-prompt.md", "AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
+  fs.writeFileSync(path.join(CHAT_DIR, instructionName), `${AE_HARNESS_SYSTEM_PROMPT}\n`, "utf8");
 }
 
 let state: ChatState = {
@@ -289,7 +294,12 @@ function saveSettings(): void {
 }
 
 const savedSettings = loadSettings();
-const providerSessions: Partial<Record<CliProviderId, string>> = savedSettings.providerSessions || {};
+// A prompt/tool-contract update must start fresh harness sessions. Several CLIs
+// freeze their system prompt when a session is created, so resuming an older
+// session would preserve obsolete After Effects instructions.
+const providerSessions: Partial<Record<CliProviderId, string>> = savedSettings.version === VERSION
+  ? savedSettings.providerSessions || {}
+  : {};
 if (savedSettings.provider && PROVIDERS[savedSettings.provider]) {
   state.provider = savedSettings.provider;
   state.providerName = PROVIDERS[savedSettings.provider].label;
@@ -1429,6 +1439,8 @@ class GenericCliClient {
       autoApprove: state.noApprovalPrompts,
       mcpConfigPath: MCP_CONFIG_PATH,
       mcpExecutable,
+      systemPrompt: AE_HARNESS_SYSTEM_PROMPT,
+      systemPromptPath: AE_SYSTEM_PROMPT_PATH,
       piExtensionPath: piExtensionPath || "",
       piSessionDir: PI_SESSION_DIR,
       kimiFlavor,

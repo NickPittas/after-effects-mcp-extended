@@ -404,9 +404,10 @@ export function createStandardMcpConfig(mcpExecutable: string): Record<string, u
   };
 }
 
-export function createOpenCodeMcpConfig(mcpExecutable: string): Record<string, unknown> {
+export function createOpenCodeMcpConfig(mcpExecutable: string, systemPromptPath?: string): Record<string, unknown> {
   return {
     $schema: "https://opencode.ai/config.json",
+    ...(systemPromptPath ? { instructions: [systemPromptPath] } : {}),
     mcp: {
       AfterEffectsMCP: {
         type: "local",
@@ -427,13 +428,15 @@ export function buildProviderRunSpec(input: {
   autoApprove: boolean;
   mcpConfigPath: string;
   mcpExecutable: string;
+  systemPrompt: string;
+  systemPromptPath: string;
   piExtensionPath: string;
   piSessionDir: string;
   kimiFlavor?: KimiCliFlavor;
 }): ProviderRunSpec {
   const commonEnv = { ...process.env, AE_MCP_EXECUTABLE: input.mcpExecutable };
   if (input.provider === "claude") {
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--mcp-config", input.mcpConfigPath];
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--mcp-config", input.mcpConfigPath, "--append-system-prompt-file", input.systemPromptPath];
     if (input.autoApprove) args.push("--dangerously-skip-permissions");
     if (input.sessionId) args.push("--resume", input.sessionId);
     args.push("--add-dir", path.dirname(input.promptFile));
@@ -457,7 +460,7 @@ export function buildProviderRunSpec(input: {
     return { args, env: commonEnv, stdinText: input.promptText };
   }
   if (input.provider === "pi") {
-    const args = ["--print", "--mode", "json", "--session-dir", input.piSessionDir, "--extension", input.piExtensionPath];
+    const args = ["--print", "--mode", "json", "--session-dir", input.piSessionDir, "--extension", input.piExtensionPath, "--append-system-prompt", input.systemPromptPath];
     if (input.sessionId) args.push("--continue");
     args.push(`@${input.promptFile}`);
     for (const attachmentPath of input.attachmentPaths) args.push(`@${attachmentPath}`);
@@ -474,7 +477,7 @@ export function buildProviderRunSpec(input: {
     args.push("--", input.promptText);
     return {
       args,
-      env: { ...commonEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify(createOpenCodeMcpConfig(input.mcpExecutable)) },
+      env: { ...commonEnv, OPENCODE_CONFIG_CONTENT: JSON.stringify(createOpenCodeMcpConfig(input.mcpExecutable, input.systemPromptPath)) },
     };
   }
   throw new Error(`Provider ${input.provider} does not use the generic CLI adapter.`);

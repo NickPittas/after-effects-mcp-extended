@@ -21,6 +21,8 @@ const base = {
   autoApprove: true,
   mcpConfigPath: "C:\\Temp\\mcp.json",
   mcpExecutable: "C:\\Program Files\\AfterEffectsMCP\\after-effects-mcp-extended.exe",
+  systemPrompt: "You are embedded in Adobe After Effects.",
+  systemPromptPath: "C:\\Temp\\after-effects-system-prompt.md",
   piExtensionPath: "C:\\Temp\\pi-after-effects-extension.ts",
   piSessionDir: "C:\\Temp\\pi-sessions",
 };
@@ -34,6 +36,7 @@ const kimiCodeSpec = buildProviderRunSpec({ ...base, provider: "kimi", kimiFlavo
 assert(specs.claude.args.includes("--dangerously-skip-permissions"));
 assert(specs.claude.args.includes("--resume"));
 assert(specs.claude.args.includes("--mcp-config"));
+assert(specs.claude.args.includes("--append-system-prompt-file") && specs.claude.args.includes(base.systemPromptPath));
 assert.equal(specs.claude.stdinText, base.promptText);
 assert(specs.gemini.args.includes("--output-format") && specs.gemini.args.includes("stream-json"));
 assert(specs.gemini.args.includes("--approval-mode=yolo"));
@@ -48,6 +51,7 @@ assert(specs.pi.args.includes("--extension") && specs.pi.args.includes(base.piEx
 assert(specs.pi.args.includes("--print"));
 assert(specs.pi.args.includes("--mode") && specs.pi.args.includes("json"));
 assert(specs.pi.args.includes("--session-dir") && specs.pi.args.includes("--continue"));
+assert(specs.pi.args.includes("--append-system-prompt") && specs.pi.args.includes(base.systemPromptPath));
 assert(specs.opencode.args.includes("--auto") && specs.opencode.args.includes("--session"));
 assert(specs.opencode.args.includes("--format") && specs.opencode.args.includes("json"));
 assert.equal(specs.opencode.args.filter((value) => value === "--file").length, base.attachmentPaths.length);
@@ -55,6 +59,7 @@ assert.equal(specs.opencode.args.at(-2), "--");
 assert.equal(specs.opencode.args.at(-1), base.promptText);
 assert(!specs.opencode.args.includes(base.promptFile));
 assert.equal(JSON.parse(specs.opencode.env?.OPENCODE_CONFIG_CONTENT || "{}").mcp.AfterEffectsMCP.type, "local");
+assert.deepEqual(JSON.parse(specs.opencode.env?.OPENCODE_CONFIG_CONTENT || "{}").instructions, [base.systemPromptPath]);
 assert.equal((createOpenCodeMcpConfig(base.mcpExecutable) as any).mcp.AfterEffectsMCP.enabled, true);
 
 const terminal = visibleTerminalInvocation("C:\\Program Files\\Pi's CLI\\pi.cmd", [], "Pi Sign In");
@@ -67,6 +72,8 @@ assert.match(launcherScript, /-WindowStyle Normal/);
 const piExtension = fs.readFileSync("assets/pi-after-effects-extension.ts", "utf8");
 assert.match(piExtension, /composition: \["get", "create", "update", "duplicate", "remove"\]/);
 assert.match(piExtension, /Composition creation is composition\/create, never composition\/add/);
+assert.match(piExtension, /inspect\/get with parameters \{scope:'capabilities'\}/);
+assert.match(piExtension, /never substitute a solid/);
 assert.match(piExtension, /Unsupported action/);
 assert.match(piExtension, /ae_command\.lock/);
 assert.match(piExtension, /ae_bridge_status\.json/);

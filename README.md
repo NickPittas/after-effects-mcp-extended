@@ -21,6 +21,7 @@ Extended capabilities include:
 - Improved bridge response tracking and direct rendered-frame image returns
 - Dockable, resizable ScriptUI bridge panel
 - Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, and OpenCode, with per-provider sessions, streamed conversations, account/setup controls, viewer/UI screenshots, live tool activity, Stop, and autonomous mode
+- Shared After Effects system instructions for every CLI harness, with the live operation matrix, parameter guidance, native-object rules, and verification behavior
 - Standalone Windows MCP and chat executables; release users do not need Node.js or npm
 
 ![Node.js](https://img.shields.io/badge/node-%3E=14.x-brightgreen.svg)
@@ -121,7 +122,10 @@ Codex uses its native app-server integration. Claude Code, Gemini CLI, Kimi CLI,
 and OpenCode receive the bundled AfterEffectsMCP server through their supported
 MCP configuration. Pi does not provide native MCP support, so the installer
 ships a small Pi extension that exposes the same unified After Effects command
-through the existing local bridge.
+through the existing local bridge. The companion supplies the same After Effects
+operating instructions through MCP initialization and each CLI's supported
+system-prompt or project-instruction mechanism. Prompt-contract version changes
+start a fresh provider session so stale instructions are not resumed.
 
 Developers can build and install from source:
 
