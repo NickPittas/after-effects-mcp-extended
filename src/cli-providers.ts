@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-export type CliProviderId = "codex" | "claude" | "gemini" | "kimi" | "pi" | "opencode";
+export type CliProviderId = "codex" | "claude" | "agy" | "kimi" | "pi" | "opencode";
 
 export type ProviderDefinition = {
   id: CliProviderId;
@@ -88,17 +88,21 @@ export const PROVIDERS: Record<CliProviderId, ProviderDefinition> = {
     accountHint: "Claude subscription or Anthropic API account",
     nativeMcp: true,
   },
-  gemini: {
-    id: "gemini",
-    label: "Gemini CLI",
-    shortLabel: "Gemini",
-    executableNames: ["gemini.exe", "gemini.cmd", "gemini"],
-    knownPaths: [path.join(appData, "npm", "gemini.cmd"), path.join(home, ".local", "bin", "gemini.exe")],
+  agy: {
+    id: "agy",
+    label: "Antigravity CLI",
+    shortLabel: "AGY",
+    executableNames: ["agy.exe", "agy.cmd", "agy", "antigravity.exe"],
+    knownPaths: [
+      path.join(localAppData, "agy", "bin", "agy.exe"),
+      path.join(localAppData, "agy", "bin", "antigravity.exe"),
+      path.join(home, ".local", "bin", "agy.exe"),
+    ],
     versionArgs: ["--version"],
-    docsUrl: "https://github.com/google-gemini/gemini-cli/blob/main/docs/get-started/index.md",
-    installKind: "npm",
-    installCommand: ["install", "-g", "@google/gemini-cli"],
-    accountHint: "Google Cloud, enterprise, or API-key authentication",
+    docsUrl: "https://antigravity.google/docs/cli/getting-started",
+    installKind: "powershell",
+    installCommand: "irm https://antigravity.google/cli/install.ps1 | iex",
+    accountHint: "Google or Google Cloud account",
     nativeMcp: true,
   },
   kimi: {
@@ -150,7 +154,7 @@ export const PROVIDERS: Record<CliProviderId, ProviderDefinition> = {
   },
 };
 
-export const PROVIDER_ORDER: CliProviderId[] = ["codex", "claude", "gemini", "kimi", "pi", "opencode"];
+export const PROVIDER_ORDER: CliProviderId[] = ["codex", "claude", "agy", "kimi", "pi", "opencode"];
 
 function quoteCmdArgument(value: string): string {
   if (/^[A-Za-z0-9_./:=,@+\\-]+$/.test(value)) return value;
@@ -355,14 +359,14 @@ export function inspectProvider(id: CliProviderId, checkAuthentication = true): 
       ready = ready && parsed.loggedIn !== false;
       accountLabel = parseAccountLabel(parsed, "Claude account");
     } catch {}
-  } else if (id === "gemini") {
-    const accountsPath = path.join(home, ".gemini", "google_accounts.json");
-    ready = Boolean(
-      process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-      fs.existsSync(path.join(home, ".gemini", "oauth_creds.json")) ||
-      fs.existsSync(path.join(home, ".gemini", "google_accounts.json")),
-    );
-    accountLabel = ready ? identityFromJsonFile(accountsPath) || "Gemini authentication" : accountLabel;
+  } else if (id === "agy") {
+    // Antigravity keeps its token in the operating-system keyring and does not
+    // expose a non-interactive auth-status command. The CLI settings directory
+    // is created by its first-launch flow and is the only safe local readiness
+    // signal that does not open a browser or start an agent turn.
+    const antigravityHome = path.join(home, ".gemini", "antigravity-cli");
+    ready = fs.existsSync(path.join(antigravityHome, "settings.json")) || directoryHasFiles(antigravityHome);
+    accountLabel = ready ? "Google account (Antigravity keyring)" : accountLabel;
   } else if (id === "kimi") {
     const codeHome = process.env.KIMI_CODE_HOME || path.join(home, ".kimi-code");
     const dataRoots = [codeHome, path.join(home, ".kimi")];
@@ -442,10 +446,11 @@ export function buildProviderRunSpec(input: {
     args.push("--add-dir", path.dirname(input.promptFile));
     return { args, env: commonEnv, stdinText: input.promptText };
   }
-  if (input.provider === "gemini") {
-    const args = ["--skip-trust", "--output-format", "stream-json", "--include-directories", path.dirname(input.promptFile), "-p", `Read and follow the request in @${input.promptFile}`];
-    if (input.autoApprove) args.unshift("--approval-mode=yolo");
-    if (input.sessionId) args.unshift("--resume", input.sessionId);
+  if (input.provider === "agy") {
+    const args = ["--output-format", "stream-json"];
+    if (input.autoApprove) args.push("--dangerously-skip-permissions");
+    if (input.sessionId) args.push("--conversation", input.sessionId);
+    args.push("-p", input.promptText);
     return { args, env: commonEnv };
   }
   if (input.provider === "kimi") {
@@ -521,18 +526,29 @@ export function normalizeProviderLine(provider: CliProviderId, line: string): No
     return events;
   }
 
-  if (provider === "gemini") {
-    const sessionId = message.session_id || message.sessionId;
+  if (provider === "agy") {
+    const step = message.step && typeof message.step === "object" ? message.step : {};
+    const sessionId = message.conversation_id || message.conversationId || message.session_id || message.sessionId || step.conversation_id;
     if (sessionId) events.push({ kind: "session", sessionId: String(sessionId) });
-    if (message.type === "message" && String(message.role || "").toLowerCase() === "assistant") {
-      events.push({ kind: "textBlock", text: String(message.content || message.text || "") });
-    } else if (message.type === "tool_use") {
-      events.push({ kind: "toolStart", toolId: String(message.tool_id || message.id || ""), toolName: String(message.tool_name || message.name || "Tool"), toolDetail: JSON.stringify(message.parameters || message.args || {}) });
-    } else if (message.type === "tool_result") {
-      events.push({ kind: "toolEnd", toolId: String(message.tool_id || message.id || ""), toolName: String(message.tool_name || message.name || "Tool"), failed: Boolean(message.error) });
-    } else if (message.type === "error") {
-      events.push({ kind: "error", text: String(message.message || message.error || "Gemini CLI failed") });
+    const toolInfo = message.tool_info || step.tool_info;
+    if (message.type === "step_update" && toolInfo && typeof toolInfo === "object") {
+      const toolId = String(toolInfo.id || toolInfo.tool_id || message.step_id || message.id || "");
+      const toolName = String(toolInfo.name || toolInfo.tool_name || "Tool");
+      const parameters = toolInfo.parameters || toolInfo.args || toolInfo.input || {};
+      events.push({ kind: "toolStart", toolId, toolName, toolDetail: JSON.stringify(parameters) });
+      if (Object.prototype.hasOwnProperty.call(toolInfo, "output") || toolInfo.status === "completed" || toolInfo.status === "failed") {
+        events.push({ kind: "toolEnd", toolId, toolName, failed: Boolean(toolInfo.error) || toolInfo.status === "failed" });
+      }
+    } else if (message.type === "step_update") {
+      const text = String(message.delta || message.text || message.content || step.delta || step.text || step.content || "");
+      if (text) events.push({ kind: message.delta || step.delta ? "textDelta" : "textBlock", text });
+    } else if (message.type === "error" || message.status === "error") {
+      events.push({ kind: "error", text: String(message.message || message.error || "Antigravity CLI failed") });
     } else if (message.type === "result") {
+      const result = message.result || message.response || message.output;
+      const text = typeof result === "string" ? result : result && typeof result === "object" ? String(result.text || result.content || "") : "";
+      if (text) events.push({ kind: "finalText", text });
+      if (message.error || message.status === "error") events.push({ kind: "error", text: String(message.error || message.message || "Antigravity CLI failed") });
       events.push({ kind: "complete" });
     }
     return events;
