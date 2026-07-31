@@ -94,7 +94,7 @@ type ChatRequest = {
   providerId?: CliProviderId;
 };
 
-const VERSION = "1.10.2";
+const VERSION = "1.10.3";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -324,9 +324,10 @@ const savedSettings = loadSettings();
 const providerSessions: Partial<Record<CliProviderId, string>> = savedSettings.version === VERSION
   ? savedSettings.providerSessions || {}
   : {};
-if (savedSettings.provider && PROVIDERS[savedSettings.provider]) {
-  state.provider = savedSettings.provider;
-  state.providerName = PROVIDERS[savedSettings.provider].label;
+const savedProvider = String(savedSettings.provider || "") === "gemini" ? "agy" : savedSettings.provider;
+if (savedProvider && PROVIDERS[savedProvider]) {
+  state.provider = savedProvider;
+  state.providerName = PROVIDERS[savedProvider].label;
 }
 
 type BridgeHeartbeat = {
@@ -490,16 +491,13 @@ function ensureCurrentProviderMcp(snapshot: ProviderSnapshot): void {
     snapshot.mcpStatus = state.mcpStatus;
     return;
   }
-  if (snapshot.id === "gemini" && snapshot.cliPath) {
-    const existing = spawnCliSync(snapshot.cliPath, ["mcp", "list"], { timeout: 15000 });
-    const existingOutput = `${existing.stdout || existing.stderr || ""}`;
-    if (existing.status !== 0 || !/AfterEffectsMCP/i.test(existingOutput) || !registrationOutputMatchesPath(existingOutput, mcpExecutable)) {
-      if (/AfterEffectsMCP/i.test(existingOutput)) {
-        spawnCliSync(snapshot.cliPath, ["mcp", "remove", "AfterEffectsMCP"], { timeout: 15000 });
-      }
-      const added = spawnCliSync(snapshot.cliPath, ["mcp", "add", "AfterEffectsMCP", mcpExecutable, "--scope", "user", "--trust"], { timeout: 20000 });
-      snapshot.mcpStatus = added.status === 0 ? "ready" : "missing";
-    } else snapshot.mcpStatus = "ready";
+  if (snapshot.id === "agy") {
+    try {
+      writeAgyProjectMcpConfig(mcpExecutable);
+      snapshot.mcpStatus = "ready";
+    } catch {
+      snapshot.mcpStatus = "missing";
+    }
   } else snapshot.mcpStatus = "ready";
   state.mcpStatus = snapshot.mcpStatus;
 }
@@ -1324,6 +1322,12 @@ function writeKimiCodeProjectMcpConfig(mcpExecutable: string): void {
   writeJsonAtomic(path.join(directory, "mcp.json"), createStandardMcpConfig(mcpExecutable));
 }
 
+function writeAgyProjectMcpConfig(mcpExecutable: string): void {
+  const directory = path.join(CHAT_DIR, ".agents");
+  fs.mkdirSync(directory, { recursive: true });
+  writeJsonAtomic(path.join(directory, "mcp_config.json"), createStandardMcpConfig(mcpExecutable));
+}
+
 function findNpm(): string | null {
   const candidates = [
     path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs", "npm.cmd"),
@@ -1384,7 +1388,7 @@ async function startGenericLogin(): Promise<void> {
   if (state.busy) throw new Error(`Stop the active ${state.providerName} turn before changing accounts.`);
   const loginArgs: Record<Exclude<CliProviderId, "codex">, string[]> = {
     claude: ["auth", "login"],
-    gemini: [],
+    agy: [],
     kimi: ["login"],
     pi: [],
     opencode: ["auth", "login"],
@@ -1404,6 +1408,8 @@ async function startGenericLogin(): Promise<void> {
   });
   if (state.provider === "pi") {
     appendTranscript("system", "Pi opened in a terminal. Enter /login, choose and authenticate a model provider, then choose Refresh status here.");
+  } else if (state.provider === "agy") {
+    appendTranscript("system", "Antigravity opened in a terminal. Complete Google sign-in if prompted. To change accounts, enter /logout, then launch it again and sign in. Choose Refresh status here when finished.");
   } else {
     appendTranscript("system", `A terminal was opened intentionally for ${state.providerName} sign-in. Complete authentication there, then choose Refresh status.`);
   }
@@ -1458,6 +1464,7 @@ class GenericCliClient {
     const provider = state.provider;
     const kimiFlavor = provider === "kimi" ? detectKimiCliFlavor(state.cliPath) : undefined;
     if (kimiFlavor === "kimi-code") writeKimiCodeProjectMcpConfig(mcpExecutable);
+    if (provider === "agy") writeAgyProjectMcpConfig(mcpExecutable);
     const runSpec = buildProviderRunSpec({
       provider,
       promptText,

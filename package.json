@@ -1,6 +1,6 @@
 {
   "name": "after-effects-mcp-extended",
-  "version": "1.10.2",
+  "version": "1.10.3",
   "description": "Extended MCP server and multi-CLI chat panel for Adobe After Effects",
   "main": "build/index.js",
   "type": "module",

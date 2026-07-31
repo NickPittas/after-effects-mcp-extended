@@ -27,10 +27,10 @@ const base = {
   piSessionDir: "C:\\Temp\\pi-sessions",
 };
 
-assert.deepEqual(PROVIDER_ORDER, ["codex", "claude", "gemini", "kimi", "pi", "opencode"]);
+assert.deepEqual(PROVIDER_ORDER, ["codex", "claude", "agy", "kimi", "pi", "opencode"]);
 
 const specs = Object.fromEntries(
-  (["claude", "gemini", "kimi", "pi", "opencode"] as CliProviderId[]).map((provider) => [provider, buildProviderRunSpec({ ...base, provider })]),
+  (["claude", "agy", "kimi", "pi", "opencode"] as CliProviderId[]).map((provider) => [provider, buildProviderRunSpec({ ...base, provider })]),
 );
 const kimiCodeSpec = buildProviderRunSpec({ ...base, provider: "kimi", kimiFlavor: "kimi-code" });
 assert(specs.claude.args.includes("--dangerously-skip-permissions"));
@@ -38,9 +38,11 @@ assert(specs.claude.args.includes("--resume"));
 assert(specs.claude.args.includes("--mcp-config"));
 assert(specs.claude.args.includes("--append-system-prompt-file") && specs.claude.args.includes(base.systemPromptPath));
 assert.equal(specs.claude.stdinText, base.promptText);
-assert(specs.gemini.args.includes("--output-format") && specs.gemini.args.includes("stream-json"));
-assert(specs.gemini.args.includes("--approval-mode=yolo"));
-assert(specs.gemini.args.includes("--skip-trust"));
+assert(specs.agy.args.includes("--output-format") && specs.agy.args.includes("stream-json"));
+assert(specs.agy.args.includes("--dangerously-skip-permissions"));
+assert(specs.agy.args.includes("--conversation") && specs.agy.args.includes(base.sessionId));
+assert(specs.agy.args.includes("-p") && specs.agy.args.includes(base.promptText));
+assert(!specs.agy.args.includes("--skip-trust") && !specs.agy.args.includes("--approval-mode=yolo"));
 assert(specs.kimi.args.includes("--continue"));
 assert(specs.kimi.args.includes("--mcp-config-file"));
 assert.equal(specs.kimi.stdinText, base.promptText);
@@ -100,7 +102,12 @@ const cepInstaller = fs.readFileSync("install-cep.ps1", "utf8");
 assert.match(cepInstaller, /after-effects-mcp-extended\.exe/);
 
 assert.equal(normalizeProviderLine("claude", JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Hi" } } }))[0].text, "Hi");
-assert.equal(normalizeProviderLine("gemini", JSON.stringify({ type: "message", role: "assistant", content: "Hello" }))[0].kind, "textBlock");
+const agyInit = normalizeProviderLine("agy", JSON.stringify({ type: "init", conversation_id: "agy-session" }));
+assert.equal(agyInit[0].sessionId, "agy-session");
+assert.equal(normalizeProviderLine("agy", JSON.stringify({ type: "step_update", step_type: "assistant_message", text: "Hello" }))[0].kind, "textBlock");
+const agyTool = normalizeProviderLine("agy", JSON.stringify({ type: "step_update", step_type: "tool", step_id: "agy-tool", tool_info: { name: "AfterEffectsMCP", parameters: { operation: "inspect" }, output: { ok: true } } }));
+assert.deepEqual(agyTool.map((event) => event.kind), ["toolStart", "toolEnd"]);
+assert.equal(normalizeProviderLine("agy", JSON.stringify({ type: "result", result: "Done" }))[0].kind, "finalText");
 assert.equal(normalizeProviderLine("kimi", JSON.stringify({ role: "assistant", content: "Kimi" }))[0].kind, "textBlock");
 assert.equal(normalizeProviderLine("pi", JSON.stringify({ type: "session", id: "pi-session" }))[0].sessionId, "pi-session");
 assert.equal(normalizeProviderLine("opencode", JSON.stringify({ type: "text", sessionID: "oc-session", part: { text: "Open" } })).at(-1)?.kind, "textBlock");

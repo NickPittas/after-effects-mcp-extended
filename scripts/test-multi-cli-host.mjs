@@ -41,8 +41,8 @@ const fakeBridge = setInterval(() => {
   } catch {}
 }, 50);
 
-fs.mkdirSync(path.join(fakeHome, ".gemini"), { recursive: true });
-fs.writeFileSync(path.join(fakeHome, ".gemini", "oauth_creds.json"), "{}");
+fs.mkdirSync(path.join(fakeHome, ".gemini", "antigravity-cli"), { recursive: true });
+fs.writeFileSync(path.join(fakeHome, ".gemini", "antigravity-cli", "settings.json"), "{}");
 fs.mkdirSync(path.join(fakeHome, ".kimi", "credentials"), { recursive: true });
 fs.writeFileSync(path.join(fakeHome, ".kimi", "credentials", "test.json"), "{}");
 fs.mkdirSync(path.join(fakeHome, ".pi", "agent"), { recursive: true });
@@ -79,10 +79,12 @@ if (provider === "claude") {
   console.log(JSON.stringify({type:"stream_event",event:{type:"content_block_start",content_block:{type:"tool_use",id:"ae-1",name:"AfterEffectsMCP",input:{operation:"inspect"}}}}));
   console.log(JSON.stringify({type:"stream_event",event:{type:"content_block_delta",delta:{type:"text_delta",text:"Claude response"}}}));
   console.log(JSON.stringify({type:"result",session_id:"claude-session",result:"Claude response",is_error:false}));
-} else if (provider === "gemini") {
-  requireArg("--skip-trust"); requireArg("stream-json"); requireArg("--approval-mode=yolo");
-  console.log(JSON.stringify({type:"init",session_id:"gemini-session"}));
-  console.log(JSON.stringify({type:"message",role:"assistant",content:"Gemini response"}));
+} else if (provider === "agy") {
+  requireArg("-p"); requireArg("stream-json"); requireArg("--dangerously-skip-permissions");
+  const projectMcp = JSON.parse(fs.readFileSync(path.join(process.cwd(), ".agents", "mcp_config.json"), "utf8"));
+  if (!projectMcp.mcpServers?.AfterEffectsMCP?.command) throw new Error("Antigravity project MCP config is invalid");
+  console.log(JSON.stringify({type:"init",conversation_id:"agy-session"}));
+  console.log(JSON.stringify({type:"step_update",step_type:"assistant_message",text:"AGY response"}));
   console.log(JSON.stringify({type:"result"}));
 } else if (provider === "kimi") {
   requireArg("--prompt"); requireArg("stream-json");
@@ -115,12 +117,13 @@ if (provider === "claude") {
 `, "utf8");
 
 const nodePath = process.execPath;
-for (const provider of ["claude", "gemini", "kimi", "pi", "opencode"]) {
+for (const provider of ["claude", "agy", "kimi", "pi", "opencode"]) {
   fs.writeFileSync(path.join(fakeBin, provider), "#!/bin/sh\nexit 99\n", "utf8");
   fs.writeFileSync(path.join(fakeBin, provider + ".cmd"), `@echo off\r\n"${nodePath}" "${fakeRunner}" ${provider} %*\r\n`, "utf8");
 }
 
-fs.writeFileSync(path.join(chatDir, "settings.json"), JSON.stringify({ version: "1.10.2", provider: "claude", noApprovalPrompts: true, trustAfterEffectsMcp: true }));
+// Exercise the in-place provider migration from the removed Gemini adapter.
+fs.writeFileSync(path.join(chatDir, "settings.json"), JSON.stringify({ version: "1.10.2", provider: "gemini", noApprovalPrompts: true, trustAfterEffectsMcp: true }));
 
 const env = {
   ...process.env,
@@ -154,8 +157,8 @@ function request(action, data = {}) {
 }
 
 try {
-  await waitFor((value) => value.hostStatus === "ready" && value.provider === "claude", "host startup");
-  const expected = { claude: "Claude response", gemini: "Gemini response", kimi: "Kimi response", pi: "Pi response", opencode: "OpenCode response" };
+  await waitFor((value) => value.hostStatus === "ready" && value.provider === "agy", "host startup and Gemini-to-AGY migration");
+  const expected = { claude: "Claude response", agy: "AGY response", kimi: "Kimi response", pi: "Pi response", opencode: "OpenCode response" };
   for (const provider of Object.keys(expected)) {
     request("selectProvider", { providerId: provider });
     const selected = await waitFor((value) => value.provider === provider && value.cliStatus === "ready" && !value.busy, provider + " selection");

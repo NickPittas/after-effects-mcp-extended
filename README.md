@@ -20,7 +20,7 @@ Extended capabilities include:
 - Text animators with character, word, and line range selectors
 - Improved bridge response tracking and direct rendered-frame image returns
 - Dockable, resizable ScriptUI bridge panel
-- Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, and OpenCode, with per-provider sessions, chronologically segmented streamed conversations, timestamped expandable tool groups, account/setup controls, viewer/UI screenshots, Stop, and autonomous mode
+- Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Antigravity CLI (AGY), Kimi CLI, Pi, and OpenCode, with per-provider sessions, chronologically segmented streamed conversations, timestamped expandable tool groups, account/setup controls, viewer/UI screenshots, Stop, and autonomous mode
 - Shared After Effects system instructions for every CLI harness, with the live operation matrix, parameter guidance, native-object rules, and verification behavior
 - Standalone Windows MCP and chat executables; release users do not need Node.js or npm
 
@@ -91,7 +91,7 @@ For a release install:
 
 - Adobe After Effects (2022 or later)
 - Windows PowerShell, included with Windows
-- An account for at least one supported CLI: Codex, Claude Code, Gemini CLI, Kimi CLI, Pi, or OpenCode
+- An account for at least one supported CLI: Codex, Claude Code, Antigravity CLI, Kimi CLI, Pi, or OpenCode
 
 Node.js and npm are only required for developing or rebuilding the project.
 
@@ -111,16 +111,17 @@ it can be removed normally. It does not require Node.js or npm. Restart After
 Effects after installation, open **Window > mcp-bridge-auto.jsx**, then open
 **Window > Extensions > After Effects MCP Chat**.
 
-Choose a CLI from the selector in the panel. Codex and Kimi use their official
-standalone Windows installers. Claude Code, Gemini CLI, Pi, and OpenCode use
+Choose a CLI from the selector in the panel. Codex, Antigravity CLI, and Kimi use
+their official standalone Windows installers. Claude Code, Pi, and OpenCode use
 their official npm packages when Node.js/npm is available; otherwise the panel
 opens that provider's official installation instructions. Sign-in is launched
 only when the user presses **Sign in**. Each provider keeps its own conversation
 session.
 
-Codex uses its native app-server integration. Claude Code, Gemini CLI, Kimi CLI,
-and OpenCode receive the bundled AfterEffectsMCP server through their supported
-MCP configuration. Pi does not provide native MCP support, so the installer
+Codex uses its native app-server integration. Claude Code, Antigravity CLI,
+Kimi CLI, and OpenCode receive the bundled AfterEffectsMCP server through their
+supported MCP configuration. Antigravity uses its native `.agents/mcp_config.json`
+workspace configuration and `AGENTS.md` instructions. Pi does not provide native MCP support, so the installer
 ships a small Pi extension that exposes the same unified After Effects command
 through the existing local bridge. The companion supplies the same After Effects
 operating instructions through MCP initialization and each CLI's supported
