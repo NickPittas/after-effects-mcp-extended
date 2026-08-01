@@ -94,7 +94,7 @@ type ChatRequest = {
   providerId?: CliProviderId;
 };
 
-const VERSION = "1.10.4";
+const VERSION = "1.10.5";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -342,7 +342,7 @@ function readBridgeHeartbeat(): { status: ChatState["bridgeStatus"]; message: st
     const heartbeat = JSON.parse(fs.readFileSync(AE_HEARTBEAT_PATH, "utf8")) as BridgeHeartbeat;
     const updatedAt = typeof heartbeat.updatedAt === "number" ? heartbeat.updatedAt : Date.parse(String(heartbeat.updatedAt || ""));
     const age = Number.isFinite(updatedAt) ? Date.now() - updatedAt : Number.POSITIVE_INFINITY;
-    if (age > 4000) return { status: "stale", message: "After Effects bridge heartbeat is stale.", heartbeat };
+    if (age > 30000) return { status: "stale", message: "After Effects bridge heartbeat is stale.", heartbeat };
     if (heartbeat.autoRun === false || heartbeat.state === "paused") {
       return { status: "paused", message: "After Effects bridge Auto-run is disabled.", heartbeat };
     }
@@ -405,16 +405,23 @@ async function acquireAeBridgeLock(timeoutMs: number): Promise<() => void> {
 }
 
 async function runAeBridgeCommand(operation: string, action: string, parameters: Record<string, unknown> = {}, timeoutMs = 15000): Promise<any> {
-  const health = readBridgeHeartbeat();
-  if (health.status !== "ready") throw new Error(`${health.message} Keep the MCP Bridge panel open with Auto-run enabled.`);
+  const initialHealth = readBridgeHeartbeat();
+  if (initialHealth.status !== "ready") throw new Error(`${initialHealth.message} Keep the MCP Bridge panel open with Auto-run enabled.`);
   const release = await acquireAeBridgeLock(timeoutMs + 5000);
   const commandId = `chat-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
   try {
+    // A project transition can replace the active bridge while this request is
+    // waiting for the shared lock. Address the instance that owns the bridge
+    // now, not the one observed before the wait.
+    const health = readBridgeHeartbeat();
+    if (health.status !== "ready") throw new Error(`${health.message} Keep the MCP Bridge panel open with Auto-run enabled.`);
     writeJsonAtomic(AE_RESULT_PATH, { status: "waiting", _commandId: commandId, message: "Waiting for After Effects" });
     writeJsonAtomic(AE_COMMAND_PATH, {
       command: "aeCommand",
       id: commandId,
       args: { operation, action, ...parameters },
+      bridgeInstanceId: health.heartbeat?.instanceId || null,
+      timeoutMs,
       timestamp: new Date().toISOString(),
       status: "pending",
     });

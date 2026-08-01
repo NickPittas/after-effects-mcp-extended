@@ -28,6 +28,70 @@ function aeMcpChatStartCompanion() {
     }
 }
 
+// CEP survives project replacement even when AE drops ScriptUI scheduled
+// tasks. Send a small BridgeTalk message into the panel's persistent `session`
+// engine so the open MCP Bridge panel can recreate its checker.
+function aeMcpChatWakeBridge() {
+    try {
+        var message = new BridgeTalk();
+        message.target = "aftereffects";
+        message.body = '#target aftereffects\n#targetengine "session"\n' +
+            '(function () { try { return $.global.__aeMcpBridgeWake ? ' +
+            '$.global.__aeMcpBridgeWake() : "panel-not-open"; } ' +
+            'catch (error) { return "wake-error:" + error.toString(); } }());';
+        var sent = message.send(2);
+        return JSON.stringify({ ok: sent === true });
+    } catch (error) {
+        return JSON.stringify({ ok: false, error: error.toString() });
+    }
+}
+
+function aeMcpChatFindBridgeScript() {
+    var candidates = [
+        new File(Folder.startup.fsName + "/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx"),
+        new File("C:/Program Files/Adobe/Adobe After Effects 2026/Support Files/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx")
+    ];
+    for (var i = 0; i < candidates.length; i++) {
+        if (candidates[i].exists) return candidates[i];
+    }
+    return null;
+}
+
+// Load the bridge command implementation into the CEP host engine only when
+// the open ScriptUI panel has not already defined it. Headless mode deliberately
+// skips all ScriptUI construction and does not start an AE scheduleTask.
+function aeMcpChatInitializeBridgeCore() {
+    try {
+        if (typeof checkForCommands === "function" && typeof aeCommand === "function") {
+            return JSON.stringify({ ok: true, reused: true });
+        }
+        var bridgeScript = aeMcpChatFindBridgeScript();
+        if (!bridgeScript) return JSON.stringify({ ok: false, error: "Installed MCP Bridge script was not found." });
+        $.global.__aeMcpHeadlessBridgeMode = true;
+        try { $.evalFile(bridgeScript); }
+        finally { $.global.__aeMcpHeadlessBridgeMode = false; }
+        var ready = typeof checkForCommands === "function" && typeof aeCommand === "function";
+        return JSON.stringify({ ok: ready, reused: false, path: bridgeScript.fsName });
+    } catch (error) {
+        $.global.__aeMcpHeadlessBridgeMode = false;
+        return JSON.stringify({ ok: false, error: error.toString() });
+    }
+}
+
+function aeMcpChatProcessBridgeCommand(acceptedInstanceId) {
+    try {
+        if (typeof checkForCommands !== "function" || typeof aeCommand !== "function") {
+            var initialized = JSON.parse(aeMcpChatInitializeBridgeCore());
+            if (!initialized.ok) return JSON.stringify(initialized);
+        }
+        if (typeof recoverInterruptedBridgeCommand === "function") recoverInterruptedBridgeCommand();
+        checkForCommands(acceptedInstanceId || null);
+        return JSON.stringify({ ok: true, checkedAt: (new Date()).getTime() });
+    } catch (error) {
+        return JSON.stringify({ ok: false, error: error.toString() });
+    }
+}
+
 function aeMcpChatGetContext() {
     try {
         var context = {

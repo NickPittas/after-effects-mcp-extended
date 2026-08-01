@@ -1,6 +1,6 @@
 {
   "name": "after-effects-mcp-extended",
-  "version": "1.10.4",
+  "version": "1.10.5",
   "description": "Extended MCP server and multi-CLI chat panel for Adobe After Effects",
   "main": "build/index.js",
   "type": "module",
@@ -12,7 +12,9 @@
     "build:installer": "powershell -NoProfile -ExecutionPolicy Bypass -File ./installer/windows/build-installer.ps1",
     "test:providers": "esbuild ./scripts/test-cli-providers.ts --bundle --platform=node --format=cjs --outfile=./build/test-cli-providers.cjs && node ./build/test-cli-providers.cjs",
     "test:multi-cli-host": "npm run build:chat && node ./scripts/test-multi-cli-host.mjs",
-    "test": "npm run build && npm run test:providers && npm run test:multi-cli-host",
+    "test:cep-watchdog": "node ./scripts/test-cep-bridge-watchdog.mjs",
+    "test:bridge-lifecycle": "node ./scripts/test-bridge-lifecycle.mjs",
+    "test": "npm run build && npm run test:providers && npm run test:bridge-lifecycle && npm run test:cep-watchdog && npm run test:multi-cli-host",
     "install:standalone": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install-standalone.ps1",
     "install:cep": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install-cep.ps1",
     "start": "node build/index.js",

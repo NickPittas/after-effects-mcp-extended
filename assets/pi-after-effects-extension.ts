@@ -20,7 +20,7 @@ const operationActions: Record<string, readonly string[]> = {
   text: ["get", "add", "set", "update"],
   layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
   composition: ["get", "create", "update", "duplicate", "remove"],
-  project: ["get", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
+  project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
   render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
   frame: ["copy", "capture"],
 };
@@ -77,13 +77,14 @@ async function acquireBridgeLock(timeoutMs: number, signal?: AbortSignal): Promi
   throw new Error("Another After Effects command is still running.");
 }
 
-async function assertBridgeAvailable(): Promise<void> {
+async function assertBridgeAvailable(): Promise<{ instanceId?: string }> {
   try {
     const status = JSON.parse(await fs.readFile(heartbeatPath, "utf8"));
     const updatedAt = typeof status.updatedAt === "number" ? status.updatedAt : Date.parse(String(status.updatedAt || ""));
-    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > 4000) throw new Error("heartbeat is stale");
+    if (!Number.isFinite(updatedAt) || Date.now() - updatedAt > 30000) throw new Error("heartbeat is stale");
     if (status.autoRun === false || status.state === "paused") throw new Error("Auto-run is disabled");
     if (!["starting", "checking", "ready"].includes(String(status.state || ""))) throw new Error(`state is '${status.state || "unknown"}'`);
+    return status;
   } catch (error) {
     throw new Error(`After Effects bridge is unavailable (${error instanceof Error ? error.message : String(error)}). Keep the MCP Bridge panel open with Auto-run enabled.`);
   }
@@ -125,12 +126,18 @@ export default function (pi: ExtensionAPI) {
       const timeoutMs = Math.min(600000, Math.max(1000, Number.isFinite(requestedTimeout) ? requestedTimeout : 30000));
       const releaseBridge = await acquireBridgeLock(timeoutMs + 5000, signal);
       try {
+        // The active ScriptUI/CEP bridge may change while waiting for another
+        // command. Re-read ownership after the lock to avoid targeting a stale
+        // instance across a project lifecycle transition.
+        const bridgeStatus = await assertBridgeAvailable();
         const commandId = `pi-${Date.now()}-${Math.random().toString(16).slice(2)}`;
         await fs.writeFile(resultPath, JSON.stringify({ status: "waiting", _commandId: commandId, message: "Waiting for After Effects" }, null, 2), "utf8");
         await fs.writeFile(commandPath, JSON.stringify({
           command: "aeCommand",
           id: commandId,
           args: { operation: params.operation, action: params.action, ...(params.parameters || {}) },
+          bridgeInstanceId: bridgeStatus.instanceId || null,
+          timeoutMs,
           timestamp: new Date().toISOString(),
           status: "pending",
         }, null, 2), "utf8");

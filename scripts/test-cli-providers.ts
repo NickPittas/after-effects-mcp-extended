@@ -73,11 +73,14 @@ assert.match(launcherScript, /-WindowStyle Normal/);
 
 const piExtension = fs.readFileSync("assets/pi-after-effects-extension.ts", "utf8");
 assert.match(piExtension, /composition: \["get", "create", "update", "duplicate", "remove"\]/);
+assert.match(piExtension, /project: \["get", "new", "open"/);
 assert.match(piExtension, /Composition creation is composition\/create, never composition\/add/);
 assert.match(piExtension, /inspect\/get with parameters \{scope:'capabilities'\}/);
 assert.match(piExtension, /never substitute a solid/);
 assert.match(piExtension, /Unsupported action/);
 assert.match(piExtension, /ae_command\.lock/);
+assert.equal((piExtension.match(/await assertBridgeAvailable\(\)/g) || []).length, 2);
+assert.match(piExtension, /timeoutMs,/);
 
 const chatRenderer = fs.readFileSync("cep/main.js", "utf8");
 assert.match(chatRenderer, /function compareTimelineItems/);
@@ -93,14 +96,46 @@ assert.match(harnessPrompt, /ServerName.*AfterEffectsMCP/);
 assert.match(harnessPrompt, /ToolName.*after-effects/);
 
 const bridgePanel = fs.readFileSync("src/scripts/mcp-bridge-auto.jsx", "utf8");
-assert.match(bridgePanel, /__aeMcpBridgeScheduledTick = scheduledBridgeTick/);
+assert.match(bridgePanel, /scheduleTask\([\s\S]*checkInterval,[\s\S]*true/);
+assert.match(bridgePanel, /aeMcpBridgeScheduledTick\(scheduledInstanceId\)/);
+assert.match(bridgePanel, /taskExpression/);
+assert.match(bridgePanel, /__aeMcpBridgeWake = wakeBridgeCommandChecker/);
+assert.match(bridgePanel, /Recovered an interrupted bridge check/);
+assert.match(bridgePanel, /function recoverInterruptedBridgeCommand/);
+assert.match(bridgePanel, /commandData\.bridgeInstanceId/);
+assert.match(bridgePanel, /function retargetPendingBridgeCommandOwner/);
+assert.match(bridgePanel, /function persistedBridgeOwnerForRecovery/);
+assert.match(bridgePanel, /args\.action === "new"/);
+assert.match(bridgePanel, /args\.action === "open"/);
+assert.match(bridgePanel, /Refusing to open another project while the current project has unsaved changes/);
 assert.match(bridgePanel, /panel\.onActivate/);
 assert.match(bridgePanel, /panel\.onClose/);
-assert.doesNotMatch(bridgePanel, /scheduleTask\("checkForCommands\(\)"/);
+assert.doesNotMatch(bridgePanel, /\$\.global\.__aeMcpBridgeScheduledTick &&/);
 
 const cepMain = fs.readFileSync("cep/main.js", "utf8");
 assert.doesNotMatch(cepMain, /evalHost\(|aeMcpChatGetContext|aeMcpChatCaptureViewer/);
 assert.match(cepMain, /cep\.process\.createProcess/);
+assert.match(cepMain, /function wakeBridgeIfStale/);
+assert.match(cepMain, /function maintainBridgeWatchdog/);
+assert.match(cepMain, /function processPendingBridgeCommand/);
+assert.match(cepMain, /bridgeTakeoverSourceInstanceId/);
+assert.match(cepMain, /activeBridgeHostCallToken/);
+assert.match(cepMain, /bridgeHostInitializing/);
+assert.match(cepMain, /bridgeHostEarliestEvalAt/);
+assert.match(cepMain, /function failBridgeCommand/);
+assert.match(cepMain, /documentAfterActivate/);
+
+const chatHost = fs.readFileSync("src/chat-host.ts", "utf8");
+assert.match(chatHost, /const initialHealth = readBridgeHeartbeat\(\)/);
+assert.match(chatHost, /const health = readBridgeHeartbeat\(\)/);
+assert.match(chatHost, /timeoutMs,/);
+
+const cepHost = fs.readFileSync("cep/jsx/host.jsx", "utf8");
+assert.match(cepHost, /function aeMcpChatWakeBridge/);
+assert.match(cepHost, /function aeMcpChatInitializeBridgeCore/);
+assert.match(cepHost, /function aeMcpChatProcessBridgeCommand/);
+assert.match(cepHost, /#targetengine \"session\"/);
+assert.match(bridgePanel, /aeMcpHeadlessBridgeMode/);
 
 const cepInstaller = fs.readFileSync("install-cep.ps1", "utf8");
 assert.match(cepInstaller, /after-effects-mcp-extended\.exe/);

@@ -11,7 +11,7 @@ import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE } from "./ae-har
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.10.4"
+  version: "1.10.5"
 }, {
   instructions: AE_HARNESS_SYSTEM_PROMPT
 });
@@ -121,13 +121,20 @@ function createBridgeCommandId(): string {
   return `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
 }
 
-function writeCommandFile(command: string, args: Record<string, any> = {}, commandId?: string): string {
+function writeCommandFile(command: string, args: Record<string, any> = {}, commandId?: string, timeoutMs?: number): string {
   try {
     const commandFile = path.join(getAETempDir(), 'ae_command.json');
+    let bridgeInstanceId: string | null = null;
+    try {
+      const heartbeat = JSON.parse(fs.readFileSync(path.join(getAETempDir(), "ae_bridge_status.json"), "utf8"));
+      bridgeInstanceId = heartbeat.instanceId || null;
+    } catch {}
     const commandData = {
       command,
       id: commandId || createBridgeCommandId(),
       args,
+      bridgeInstanceId,
+      timeoutMs: timeoutMs || null,
       timestamp: new Date().toISOString(),
       status: "pending"  // pending, running, completed, error
     };
@@ -200,7 +207,7 @@ async function acquireBridgeLock(timeoutMs: number): Promise<() => void> {
   throw new Error("Another After Effects command is still in progress.");
 }
 
-function assertBridgeAvailable(maxAgeMs: number = 4000): void {
+function assertBridgeAvailable(maxAgeMs: number = 30000): void {
   const statusPath = path.join(getAETempDir(), "ae_bridge_status.json");
   try {
     const status = JSON.parse(fs.readFileSync(statusPath, "utf8"));
@@ -1051,7 +1058,7 @@ const afterEffectsOperationActions: Record<string, readonly string[]> = {
   text: ["get", "add", "set", "update"],
   layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
   composition: ["get", "create", "update", "duplicate", "remove"],
-  project: ["get", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
+  project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
   render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
   frame: ["copy", "capture"],
 };
@@ -1096,7 +1103,7 @@ server.tool(
       releaseBridge = await acquireBridgeLock(timeoutMs + 15000);
       const commandId = createBridgeCommandId();
       clearResultsFile(commandId);
-      writeCommandFile("aeCommand", { operation, action, ...parameters }, commandId);
+      writeCommandFile("aeCommand", { operation, action, ...parameters }, commandId, timeoutMs);
       const result = await waitForBridgeResult("aeCommand", commandId, timeoutMs, 250);
       const content: any[] = [{ type: "text", text: result }];
 

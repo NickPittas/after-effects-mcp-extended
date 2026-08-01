@@ -1315,6 +1315,8 @@ if (typeof JSON.stringify !== "function") {
 
 // Use the host-provided Panel when loaded from Scripts/ScriptUI Panels.
 // Fall back to a floating palette only when the script is run directly.
+var aeMcpHeadlessBridgeMode = $.global.__aeMcpHeadlessBridgeMode === true;
+if (!aeMcpHeadlessBridgeMode) {
 var panel = (this instanceof Panel)
     ? this
     : new Window("palette", "After Effects MCP", undefined, { resizeable: true });
@@ -1737,6 +1739,15 @@ chatTrustAeMcp.onClick = function () {
         noApprovalPrompts: chatTrustAeMcp.value
     });
 };
+} else {
+    // The CEP panel loads this same command implementation without creating a
+    // second UI. These small stubs satisfy the execution and logging paths.
+    var panel = null;
+    var bridgeTab = null;
+    var statusText = { text: "" };
+    var logText = { text: "" };
+    var autoRunCheckbox = { value: true };
+}
 
 // Check interval (ms)
 var checkInterval = 750;
@@ -1752,7 +1763,7 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.10.4",
+            version: "1.10.5",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             instanceId: bridgeInstanceId,
@@ -2496,7 +2507,7 @@ function aeInspect(args) {
     var scope = args.scope || "composition";
     if (scope === "capabilities") {
         return {
-            bridgeVersion: "1.10.4",
+            bridgeVersion: "1.10.5",
             command: "aeCommand",
             operations: {
                 inspect: ["get"],
@@ -2508,7 +2519,7 @@ function aeInspect(args) {
                 text: ["get", "add", "set", "update"],
                 layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
                 composition: ["get", "create", "update", "duplicate", "remove"],
-                project: ["get", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
+                project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
                 render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
                 frame: ["copy", "capture"]
             },
@@ -2536,6 +2547,7 @@ function aeInspect(args) {
         var projectResult = {
             name: app.project.file ? app.project.file.name : "Untitled Project",
             path: app.project.file ? app.project.file.fsName : "",
+            dirty: app.project.dirty === true,
             bitsPerChannel: app.project.bitsPerChannel,
             numItems: app.project.numItems,
             items: []
@@ -4207,6 +4219,32 @@ function aeRenderCommand(args) {
 
 function aeProjectCommand(args) {
     if (args.action === "get") return aeInspect({ scope: "project", maxItems: args.maxItems });
+    if (args.action === "new") {
+        if (app.project && app.project.dirty === true) throw new Error("Refusing to create a new project while the current project has unsaved changes. Save it first.");
+        var createdProject = app.newProject();
+        if (!createdProject) throw new Error("After Effects did not create the new project.");
+        if (args.path) app.project.save(new File(args.path));
+        return {
+            name: app.project.file ? app.project.file.name : "Untitled Project",
+            path: app.project.file ? app.project.file.fsName : "",
+            dirty: app.project.dirty === true,
+            numItems: app.project.numItems
+        };
+    }
+    if (args.action === "open") {
+        if (!args.path) throw new Error("Project path is required.");
+        if (app.project && app.project.dirty === true) throw new Error("Refusing to open another project while the current project has unsaved changes. Save it first.");
+        var projectFile = new File(args.path);
+        if (!projectFile.exists) throw new Error("Project file does not exist: " + projectFile.fsName);
+        var openedProject = app.open(projectFile);
+        if (!openedProject) throw new Error("After Effects did not open the project.");
+        return {
+            name: app.project.file ? app.project.file.name : "Untitled Project",
+            path: app.project.file ? app.project.file.fsName : "",
+            dirty: app.project.dirty === true,
+            numItems: app.project.numItems
+        };
+    }
     if (args.action === "media") return aeProjectMediaList(args);
     if (args.action === "getItem") return aeDetailedProjectItemSummary(aeGetProjectItem(args).item, args);
     if (args.action === "updateItem") {
@@ -4577,6 +4615,7 @@ function updateCommandStatus(status, commandId) {
                     return;
                 }
                 commandData.status = status;
+                commandData.statusUpdatedAt = (new Date()).getTime();
                 
                 commandFile.open("w");
                 commandFile.write(JSON.stringify(commandData, null, 2));
@@ -4595,10 +4634,16 @@ function logToPanel(message) {
 }
 
 // Check for new commands
-function checkForCommands() {
+function checkForCommands(acceptedInstanceId) {
+    // AE executes ExtendScript on one thread. If a later tick observes this
+    // flag, the previous evaluation was interrupted and cannot still be active.
+    if (isChecking) {
+        isChecking = false;
+        logToPanel("Recovered an interrupted bridge check.");
+    }
     bridgeLastTickAt = (new Date()).getTime();
     writeBridgeHeartbeat(autoRunCheckbox.value ? "ready" : "paused");
-    if (!autoRunCheckbox.value || isChecking) return;
+    if (!autoRunCheckbox.value) return;
     
     isChecking = true;
     
@@ -4613,6 +4658,12 @@ function checkForCommands() {
                 var commandData = (typeof JSON !== "undefined" && JSON.parse)
                     ? JSON.parse(content)
                     : eval("(" + content + ")");
+                var commandOwner = acceptedInstanceId || bridgeInstanceId;
+                if (commandData.bridgeInstanceId && commandData.bridgeInstanceId !== commandOwner) {
+                    isChecking = false;
+                    writeBridgeHeartbeat("ready");
+                    return;
+                }
                 
                 // Only execute pending commands
                 if (commandData.status === "pending") {
@@ -4633,13 +4684,108 @@ function checkForCommands() {
     writeBridgeHeartbeat("ready");
 }
 
+function recoverInterruptedBridgeCommand() {
+    try {
+        var commandFile = new File(getCommandFilePath());
+        if (!commandFile.exists || !commandFile.open("r")) return false;
+        var content = commandFile.read();
+        commandFile.close();
+        if (!content) return false;
+        var commandData = JSON.parse(content);
+        if (commandData.status !== "running") return false;
+
+        var resultFile = new File(getResultFilePath());
+        var existingResult = null;
+        if (resultFile.exists && resultFile.open("r")) {
+            try { existingResult = JSON.parse(resultFile.read()); } catch (_resultParseError) {}
+            resultFile.close();
+        }
+        if (existingResult && existingResult._commandId === commandData.id && existingResult.status !== "waiting") {
+            commandData.status = existingResult.status === "error" ? "error" : "completed";
+        } else {
+            existingResult = {
+                status: "error",
+                _commandId: commandData.id || null,
+                _commandExecuted: commandData.command || null,
+                message: "After Effects interrupted this command during a project or panel lifecycle transition. Retry the request.",
+                _responseTimestamp: (new Date()).getTime()
+            };
+            resultFile.encoding = "UTF-8";
+            if (resultFile.open("w")) {
+                resultFile.write(JSON.stringify(existingResult, null, 2));
+                resultFile.close();
+            }
+            commandData.status = "error";
+        }
+        commandData.statusUpdatedAt = (new Date()).getTime();
+        if (commandFile.open("w")) {
+            commandFile.write(JSON.stringify(commandData, null, 2));
+            commandFile.close();
+        }
+        return true;
+    } catch (error) {
+        logToPanel("Unable to recover interrupted command: " + error.toString());
+        return false;
+    }
+}
+
+function retargetPendingBridgeCommandOwner(previousInstanceId, nextInstanceId) {
+    if (!previousInstanceId || previousInstanceId === nextInstanceId) return false;
+    try {
+        var commandFile = new File(getCommandFilePath());
+        if (!commandFile.exists || !commandFile.open("r")) return false;
+        var content = commandFile.read();
+        commandFile.close();
+        if (!content) return false;
+        var commandData = JSON.parse(content);
+        if (commandData.status !== "pending" || commandData.bridgeInstanceId !== previousInstanceId) return false;
+        commandData.bridgeInstanceId = nextInstanceId;
+        commandData.statusUpdatedAt = (new Date()).getTime();
+        if (!commandFile.open("w")) return false;
+        commandFile.write(JSON.stringify(commandData, null, 2));
+        commandFile.close();
+        return true;
+    } catch (error) {
+        logToPanel("Unable to transfer pending command ownership: " + error.toString());
+        return false;
+    }
+}
+
+function persistedBridgeOwnerForRecovery() {
+    try {
+        var heartbeatFile = new File(Folder.myDocuments.fsName + "/ae-mcp-bridge/ae_bridge_status.json");
+        if (!heartbeatFile.exists || !heartbeatFile.open("r")) return null;
+        var content = heartbeatFile.read();
+        heartbeatFile.close();
+        if (!content) return null;
+        var heartbeat = JSON.parse(content);
+        var updatedAt = Number(heartbeat.updatedAt || 0);
+        var age = (new Date()).getTime() - updatedAt;
+        var state = String(heartbeat.state || "");
+        // A fresh ready owner can belong to another live AE process and must
+        // never be stolen. Closed or stale ownership is safe to recover.
+        if (heartbeat.instanceId && (state === "closed" || age > checkInterval * 3)) return String(heartbeat.instanceId);
+    } catch (_persistedOwnerError) {}
+    return null;
+}
+
 function scheduleNextBridgeCheck() {
     if (bridgeIsClosing || $.global.__aeMcpBridgeInstanceId !== bridgeInstanceId) return;
+    var taskExpression = 'aeMcpBridgeScheduledTick("' + bridgeInstanceId.replace(/[^0-9-]/g, "") + '")';
     $.global.__aeMcpBridgeCommandTaskId = app.scheduleTask(
-        "$.global.__aeMcpBridgeScheduledTick && $.global.__aeMcpBridgeScheduledTick()",
+        taskExpression,
         checkInterval,
-        false
+        true
     );
+    if (!$.global.__aeMcpBridgeCommandTaskId) throw new Error("After Effects did not create the repeating bridge task.");
+}
+
+// scheduleTask resolves a top-level function name reliably in AE. Calling a
+// function through $.global can return a valid task ID while never firing.
+// The token makes callbacks left by a previous panel instance harmless.
+function aeMcpBridgeScheduledTick(scheduledInstanceId) {
+    if ($.global.__aeMcpBridgeInstanceId !== scheduledInstanceId) return;
+    scheduledBridgeTick();
 }
 
 function scheduledBridgeTick() {
@@ -4650,42 +4796,56 @@ function scheduledBridgeTick() {
         isChecking = false;
         logToPanel("Bridge timer error: " + error.toString());
         writeBridgeHeartbeat("error");
-    } finally {
-        try { scheduleNextBridgeCheck(); }
-        catch (scheduleError) {
-            logToPanel("Unable to continue bridge timer: " + scheduleError.toString());
-            writeBridgeHeartbeat("error");
-        }
     }
+}
+
+// Called by the CEP watchdog after AE opens or replaces a project. Project
+// loading can invalidate a ScriptUI scheduled task without closing the panel,
+// so a task ID alone is not proof that the checker is still running.
+function wakeBridgeCommandChecker() {
+    if (bridgeIsClosing || $.global.__aeMcpBridgeInstanceId !== bridgeInstanceId) return "closed";
+    var age = (new Date()).getTime() - bridgeLastTickAt;
+    if (!$.global.__aeMcpBridgeCommandTaskId || age > checkInterval * 3) {
+        startCommandChecker();
+        return "restarted";
+    }
+    checkForCommands();
+    return "alive";
 }
 
 function stopCommandChecker() {
     bridgeIsClosing = true;
-    if ($.global.__aeMcpBridgeCommandTaskId) {
-        try { app.cancelTask($.global.__aeMcpBridgeCommandTaskId); } catch (_cancelBridgeTaskError) {}
-    }
     if ($.global.__aeMcpBridgeInstanceId === bridgeInstanceId) {
+        if ($.global.__aeMcpBridgeCommandTaskId) {
+            try { app.cancelTask($.global.__aeMcpBridgeCommandTaskId); } catch (_cancelBridgeTaskError) {}
+        }
         $.global.__aeMcpBridgeCommandTaskId = null;
         $.global.__aeMcpBridgeScheduledTick = null;
+        $.global.__aeMcpBridgeWake = null;
         $.global.__aeMcpBridgeInstanceId = null;
+        writeBridgeHeartbeat("closed");
     }
-    writeBridgeHeartbeat("closed");
 }
 
 // Bind the callback again every time AE creates or restores this panel. A task
 // ID from a previous AE process is meaningless in the new scripting engine.
 function startCommandChecker() {
     try {
+        var previousInstanceId = $.global.__aeMcpBridgeInstanceId || persistedBridgeOwnerForRecovery();
         if ($.global.__aeMcpBridgeCommandTaskId) {
             try { app.cancelTask($.global.__aeMcpBridgeCommandTaskId); } catch (_cancelOldTaskError) {}
+            $.global.__aeMcpBridgeCommandTaskId = null;
         }
         bridgeIsClosing = false;
-        bridgeInstanceId = String((new Date()).getTime()) + "-" + String(Math.floor(Math.random() * 1000000));
+        retargetPendingBridgeCommandOwner(previousInstanceId, bridgeInstanceId);
         $.global.__aeMcpBridgeInstanceId = bridgeInstanceId;
         $.global.__aeMcpBridgeScheduledTick = scheduledBridgeTick;
+        $.global.__aeMcpBridgeWake = wakeBridgeCommandChecker;
         writeBridgeHeartbeat("starting");
+        recoverInterruptedBridgeCommand();
         checkForCommands();
         scheduleNextBridgeCheck();
+        writeBridgeHeartbeat("ready");
     } catch (error) {
         isChecking = false;
         logToPanel("Unable to start bridge timer: " + error.toString());
@@ -4693,6 +4853,7 @@ function startCommandChecker() {
     }
 }
 
+if (!aeMcpHeadlessBridgeMode) {
 // Add manual check button
 var checkButton = bridgeTab.add("button", undefined, "Check for Commands Now");
 checkButton.onClick = function() {
@@ -4738,5 +4899,6 @@ if (panel instanceof Window) {
     panel.show();
 } else {
     panel.layout.layout(true);
+}
 }
 

@@ -13,6 +13,24 @@
   var toolsVisible = localStorage.getItem("aeMcpToolsVisible") === "true";
   var toastTimer = null;
   var lastCompanionLaunch = 0;
+  var lastBridgeWakeRequest = 0;
+  var bridgeHostReady = false;
+  var bridgeHostInitializing = false;
+  var bridgeHostInitializeStartedAt = 0;
+  var bridgeHostInitializeSequence = 0;
+  var activeBridgeHostInitializeToken = 0;
+  var bridgeHostEarliestEvalAt = Date.now() + 4000;
+  var bridgeHostBusy = false;
+  var bridgeHostCallStartedAt = 0;
+  var activeBridgeCommandId = "";
+  var bridgeHostCallSequence = 0;
+  var activeBridgeHostCallToken = 0;
+  var bridgeTakeover = false;
+  var bridgeTakeoverSourceInstanceId = "";
+  var bridgeStoppedByPanel = false;
+  var bridgeInstanceId = "cep-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
+  var lastCepHeartbeatWrite = 0;
+  var bridgeRetryAfter = 0;
   var localSending = false;
   var expandedToolGroups = {};
 
@@ -68,6 +86,8 @@
   var chatPath = documentsPath + "/ae-mcp-bridge/codex-chat";
   var requestPath = chatPath + "/requests";
   var statePath = chatPath + "/state.json";
+  var bridgeHeartbeatPath = documentsPath + "/ae-mcp-bridge/ae_bridge_status.json";
+  var bridgeResultPath = documentsPath + "/ae-mcp-bridge/ae_mcp_result.json";
 
   function ensureFolder(folderPath) {
     var parts = folderPath.replace(/\\/g, "/").split("/");
@@ -87,6 +107,273 @@
     var filePath = requestPath + "/" + request.id + ".json";
     var result = cep.fs.writeFile(filePath, JSON.stringify(request, null, 2));
     if (!result || result.err !== 0) throw new Error("Unable to send request to the CLI companion.");
+  }
+
+  function readBridgeHeartbeatRecord() {
+    try {
+      var result = cep.fs.readFile(bridgeHeartbeatPath);
+      if (!result || result.err !== 0 || !result.data) return null;
+      return JSON.parse(result.data);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function bridgeHeartbeatAge(heartbeat) {
+    try {
+      heartbeat = heartbeat || readBridgeHeartbeatRecord();
+      if (!heartbeat) return Infinity;
+      var updatedAt = Number(heartbeat.updatedAt);
+      if (!isFinite(updatedAt)) updatedAt = Date.parse(String(heartbeat.updatedAt || ""));
+      return isFinite(updatedAt) ? Date.now() - updatedAt : Infinity;
+    } catch (_) {
+      return Infinity;
+    }
+  }
+
+  function wakeBridgeIfStale(forceCheck) {
+    if (previewMode) return;
+    if (Date.now() < bridgeHostEarliestEvalAt) return;
+    var age = bridgeHeartbeatAge();
+    if (!forceCheck && age < 5000) return;
+    if (Date.now() - lastBridgeWakeRequest < 5000) return;
+    lastBridgeWakeRequest = Date.now();
+    host.evalScript("aeMcpChatWakeBridge()", function () {});
+  }
+
+  function initializeBridgeHost(callback) {
+    if (bridgeHostReady) { if (callback) callback(true); return; }
+    if (Date.now() < bridgeHostEarliestEvalAt) return;
+    if (bridgeHostInitializing) return;
+    bridgeHostInitializing = true;
+    bridgeHostInitializeStartedAt = Date.now();
+    var initializeToken = ++bridgeHostInitializeSequence;
+    activeBridgeHostInitializeToken = initializeToken;
+    host.evalScript("aeMcpChatInitializeBridgeCore()", function (rawResult) {
+      if (activeBridgeHostInitializeToken !== initializeToken) return;
+      bridgeHostInitializing = false;
+      bridgeHostInitializeStartedAt = 0;
+      activeBridgeHostInitializeToken = 0;
+      var ready = false;
+      try {
+        var result = JSON.parse(String(rawResult || "{}"));
+        ready = result.ok === true;
+      } catch (_) {}
+      bridgeHostReady = ready;
+      if (!ready) {
+        if (/modal dialog/i.test(String(rawResult || ""))) bridgeHostEarliestEvalAt = Date.now() + 5000;
+        bridgeRetryAfter = Date.now() + 3000;
+      }
+      if (callback) callback(ready);
+    });
+  }
+
+  function writeCepBridgeHeartbeat(stateName) {
+    if (Date.now() - lastCepHeartbeatWrite < 700) return;
+    lastCepHeartbeatWrite = Date.now();
+    var heartbeat = {
+      version: "1.10.5",
+      state: stateName || (bridgeHostBusy ? "checking" : "ready"),
+      autoRun: !bridgeStoppedByPanel,
+      instanceId: bridgeInstanceId,
+      taskId: "cep-watchdog",
+      lastCommand: "",
+      updatedAt: Date.now()
+    };
+    cep.fs.writeFile(bridgeHeartbeatPath, JSON.stringify(heartbeat));
+  }
+
+  function bridgeCommandRecord() {
+    try {
+      var commandPath = documentsPath + "/ae-mcp-bridge/ae_command.json";
+      var result = cep.fs.readFile(commandPath);
+      if (!result || result.err !== 0 || !result.data) return null;
+      var command = JSON.parse(result.data);
+      command.__path = commandPath;
+      return command;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function bridgeResultRecord() {
+    try {
+      var result = cep.fs.readFile(bridgeResultPath);
+      if (!result || result.err !== 0 || !result.data) return null;
+      return JSON.parse(result.data);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function resetBridgeCommandForRetry(commandId, errorText) {
+    var command = bridgeCommandRecord();
+    if (!command || command.id !== commandId) return 1;
+    var commandPath = command.__path;
+    delete command.__path;
+    if (command.status === "running") command.status = "pending";
+    command.retryCount = Number(command.retryCount || 0) + 1;
+    command.lastHostError = String(errorText || "Host evaluation was interrupted.");
+    cep.fs.writeFile(commandPath, JSON.stringify(command, null, 2));
+    return command.retryCount;
+  }
+
+  function retargetPendingBridgeCommand(command, targetInstanceId) {
+    if (!command || command.status !== "pending") return command;
+    if (
+      command.bridgeInstanceId &&
+      command.bridgeInstanceId !== targetInstanceId &&
+      bridgeTakeoverSourceInstanceId &&
+      command.bridgeInstanceId !== bridgeTakeoverSourceInstanceId
+    ) return null;
+    var commandPath = command.__path;
+    delete command.__path;
+    command.bridgeInstanceId = targetInstanceId;
+    cep.fs.writeFile(commandPath, JSON.stringify(command, null, 2));
+    command.__path = commandPath;
+    return command;
+  }
+
+  function processPendingBridgeCommand(command) {
+    if (!command || command.status !== "pending" || bridgeHostBusy || !bridgeHostReady || Date.now() < bridgeRetryAfter) return;
+    bridgeHostBusy = true;
+    bridgeHostCallStartedAt = Date.now();
+    activeBridgeCommandId = command.id;
+    var callToken = ++bridgeHostCallSequence;
+    activeBridgeHostCallToken = callToken;
+    writeCepBridgeHeartbeat("checking");
+    var commandId = command.id;
+    host.evalScript("aeMcpChatProcessBridgeCommand(" + JSON.stringify(bridgeInstanceId) + ")", function (rawResult) {
+      if (activeBridgeHostCallToken !== callToken) return;
+      bridgeHostBusy = false;
+      bridgeHostCallStartedAt = 0;
+      activeBridgeCommandId = "";
+      activeBridgeHostCallToken = 0;
+      var ok = false;
+      try {
+        var result = JSON.parse(String(rawResult || "{}"));
+        ok = result.ok === true;
+      } catch (_) {}
+      if (!ok) {
+        bridgeHostReady = false;
+        if (/modal dialog/i.test(String(rawResult || ""))) bridgeHostEarliestEvalAt = Date.now() + 5000;
+        var retryCount = resetBridgeCommandForRetry(commandId, rawResult);
+        bridgeRetryAfter = Date.now() + Math.min(15000, 1500 * Math.pow(2, Math.min(3, retryCount - 1)));
+      }
+      writeCepBridgeHeartbeat(ok ? "ready" : "error");
+    });
+  }
+
+  function clearBridgeHostCall() {
+    bridgeHostBusy = false;
+    bridgeHostCallStartedAt = 0;
+    activeBridgeCommandId = "";
+    activeBridgeHostCallToken = 0;
+  }
+
+  function failBridgeCommand(command, message) {
+    if (!command || !command.id) return;
+    var commandPath = command.__path;
+    delete command.__path;
+    command.status = "error";
+    command.statusUpdatedAt = Date.now();
+    command.lastHostError = message;
+    cep.fs.writeFile(commandPath, JSON.stringify(command, null, 2));
+    cep.fs.writeFile(bridgeResultPath, JSON.stringify({
+      status: "error",
+      _commandId: command.id,
+      _commandExecuted: command.command || null,
+      message: message,
+      _responseTimestamp: Date.now()
+    }, null, 2));
+  }
+
+  function reconcileBridgeHostCall() {
+    if (bridgeHostInitializing && Date.now() - bridgeHostInitializeStartedAt > 3000) {
+      bridgeHostInitializing = false;
+      bridgeHostInitializeStartedAt = 0;
+      activeBridgeHostInitializeToken = 0;
+      bridgeHostReady = false;
+      bridgeRetryAfter = Date.now() + 1500;
+    }
+    if (!bridgeHostBusy || !activeBridgeCommandId) return;
+    var command = bridgeCommandRecord();
+    var result = bridgeResultRecord();
+    var activeResultFinished = result && result._commandId === activeBridgeCommandId && result.status !== "waiting";
+    var activeCommandFinished = command && command.id === activeBridgeCommandId && (command.status === "completed" || command.status === "error");
+    if (activeCommandFinished || activeResultFinished) {
+      clearBridgeHostCall();
+      writeCepBridgeHeartbeat("ready");
+      return;
+    }
+    if ((!command || command.id !== activeBridgeCommandId) && Date.now() - bridgeHostCallStartedAt > 3000) {
+      clearBridgeHostCall();
+      bridgeHostReady = false;
+      bridgeRetryAfter = Date.now() + 1500;
+      return;
+    }
+    // If AE never accepted evalScript, the command remains pending. A running
+    // command is never retried here because it may legitimately take minutes.
+    if (command && command.id === activeBridgeCommandId && command.status === "pending" && Date.now() - bridgeHostCallStartedAt > 3000) {
+      var pendingCommandPath = command.__path;
+      delete command.__path;
+      command.retryCount = Number(command.retryCount || 0) + 1;
+      command.lastHostError = "After Effects did not accept the CEP host call.";
+      cep.fs.writeFile(pendingCommandPath, JSON.stringify(command, null, 2));
+      var pendingRetryCount = command.retryCount;
+      clearBridgeHostCall();
+      bridgeHostReady = false;
+      bridgeRetryAfter = Date.now() + Math.min(15000, 1500 * Math.pow(2, Math.min(3, pendingRetryCount - 1)));
+      return;
+    }
+    if (command && command.id === activeBridgeCommandId && command.status === "running") {
+      var commandTimeout = Math.max(1000, Number(command.timeoutMs || 30000));
+      if (Date.now() - bridgeHostCallStartedAt > commandTimeout + 5000) {
+        failBridgeCommand(command, "After Effects interrupted this command during a project or panel lifecycle transition. Retry the request.");
+        clearBridgeHostCall();
+        bridgeHostReady = false;
+        bridgeRetryAfter = Date.now() + 1500;
+      }
+    }
+  }
+
+  // The ScriptUI checker remains primary. CEP takes over only after its
+  // heartbeat is genuinely stale, so a command can never be executed by both.
+  function maintainBridgeWatchdog() {
+    if (previewMode) return;
+    reconcileBridgeHostCall();
+    var heartbeat = readBridgeHeartbeatRecord();
+    var age = bridgeHeartbeatAge(heartbeat);
+    var stateName = heartbeat ? String(heartbeat.state || "") : "";
+    var fromCep = heartbeat && heartbeat.instanceId === bridgeInstanceId;
+
+    if (!fromCep && (stateName === "closed" || stateName === "paused")) {
+      bridgeStoppedByPanel = true;
+      bridgeTakeover = false;
+      bridgeTakeoverSourceInstanceId = "";
+      return;
+    }
+    if (!fromCep && age < 2000 && (stateName === "ready" || stateName === "starting" || stateName === "checking")) {
+      bridgeStoppedByPanel = false;
+      bridgeTakeover = false;
+      bridgeTakeoverSourceInstanceId = "";
+      return;
+    }
+    if (bridgeStoppedByPanel) return;
+    if (!fromCep && age >= 5000) {
+      bridgeTakeover = true;
+      bridgeTakeoverSourceInstanceId = heartbeat && heartbeat.instanceId ? String(heartbeat.instanceId) : "";
+    }
+    if (!bridgeTakeover && !fromCep) return;
+
+    writeCepBridgeHeartbeat(bridgeHostBusy ? "checking" : "ready");
+    var pendingCommand = retargetPendingBridgeCommand(bridgeCommandRecord(), bridgeInstanceId);
+    if (!pendingCommand || pendingCommand.status !== "pending" || Date.now() < bridgeRetryAfter || Date.now() < bridgeHostEarliestEvalAt) return;
+    initializeBridgeHost(function (ready) {
+      if (!ready) return;
+      writeCepBridgeHeartbeat(bridgeHostBusy ? "checking" : "ready");
+      processPendingBridgeCommand(pendingCommand);
+    });
   }
 
   function launchCompanionDirectly() {
@@ -555,6 +842,14 @@
   queueRequest("updateSettings", { trustAfterEffectsMcp: elements.trustAeMcp.checked, noApprovalPrompts: elements.autonomousMode.checked });
   ensureCompanionAlive();
   setTimeout(function () { try { queueRequest("status", {}); } catch (_) {} }, 450);
+  if (typeof host.addEventListener === "function") {
+    host.addEventListener("documentAfterActivate", function () {
+      bridgeHostEarliestEvalAt = Math.max(bridgeHostEarliestEvalAt, Date.now() + 2500);
+      setTimeout(function () { wakeBridgeIfStale(true); }, 2500);
+    });
+  }
+  setInterval(maintainBridgeWatchdog, 250);
+  setTimeout(maintainBridgeWatchdog, 800);
   setInterval(readState, 180);
   setTimeout(readState, 250);
 }());
