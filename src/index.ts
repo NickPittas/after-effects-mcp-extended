@@ -6,12 +6,12 @@ import * as os from "os";
 import * as path from "path";
 import { z } from "zod";
 import { fileURLToPath } from 'url';
-import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE } from "./ae-harness-prompt.js";
+import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE, AE_TEXT_ANIMATOR_GUIDE } from "./ae-harness-prompt.js";
 
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.10.8"
+  version: "1.10.11"
 }, {
   instructions: AE_HARNESS_SYSTEM_PROMPT
 });
@@ -150,6 +150,11 @@ function createBridgeCommandId(): string {
   return `${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
 }
 
+function getChatOwnerPid(): number | undefined {
+  const ownerPid = Number(process.env.AE_MCP_CHAT_OWNER_PID);
+  return Number.isSafeInteger(ownerPid) && ownerPid > 0 ? ownerPid : undefined;
+}
+
 function writeCommandFile(command: string, args: Record<string, any> = {}, commandId?: string, timeoutMs?: number): string {
   try {
     const commandFile = path.join(getAETempDir(), 'ae_command.json');
@@ -158,10 +163,12 @@ function writeCommandFile(command: string, args: Record<string, any> = {}, comma
       const heartbeat = JSON.parse(fs.readFileSync(path.join(getAETempDir(), "ae_bridge_status.json"), "utf8"));
       bridgeInstanceId = heartbeat.instanceId || null;
     } catch {}
+    const chatOwnerPid = getChatOwnerPid();
     const commandData = {
       command,
       id: commandId || createBridgeCommandId(),
       args,
+      ...(chatOwnerPid === undefined ? {} : { chatOwnerPid }),
       bridgeInstanceId,
       timeoutMs: timeoutMs || null,
       timestamp: new Date().toISOString(),
@@ -245,7 +252,7 @@ function assertBridgeAvailable(maxAgeMs: number = 30000): void {
     if (status.autoRun === false || status.state === "paused") throw new Error("Auto-run is disabled");
     if (!["starting", "checking", "ready"].includes(String(status.state || ""))) throw new Error(`state is '${status.state || "unknown"}'`);
   } catch (error) {
-    throw new Error(`After Effects bridge is unavailable (${error instanceof Error ? error.message : String(error)}). Keep the MCP Bridge panel open with Auto-run enabled.`);
+    throw new Error(`After Effects bridge is unavailable (${error instanceof Error ? error.message : String(error)}). Keep After Effects MCP Chat open with Auto-run enabled in its Bridge tab, or use the optional legacy MCP Bridge panel.`);
   }
 }
 
@@ -334,7 +341,7 @@ legacyTool(
           {
             type: "text",
             text: `Command to run "${script}" has been queued.\n` +
-                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
+                  `Please keep "After Effects MCP Chat" open with Auto-run enabled in its Bridge tab (or use the optional legacy bridge).\n` +
                   `Use the "get-results" tool after a few seconds to check for results.`
           }
         ]
@@ -580,7 +587,7 @@ legacyTool(
           {
             type: "text",
             text: `Command to create composition "${params.name}" has been queued.\n` +
-                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
+                  `Please keep "After Effects MCP Chat" open with Auto-run enabled in its Bridge tab (or use the optional legacy bridge).\n` +
                   `Use the "get-results" tool after a few seconds to check for results.`
           }
         ]
@@ -1084,7 +1091,7 @@ const afterEffectsOperationActions: Record<string, readonly string[]> = {
   effect: ["get", "add", "update", "remove", "move"],
   mask: ["get", "add", "set", "update", "remove"],
   shape: ["get", "add", "set", "update", "remove", "move", "duplicate"],
-  text: ["get", "add", "set", "update"],
+  text: ["get", "add", "set", "update", "animator", "selector"],
   layer: ["get", "add", "update", "replaceSource", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
   composition: ["get", "create", "update", "duplicate", "remove"],
   project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
@@ -1097,7 +1104,7 @@ const afterEffectsActionContract = Object.entries(afterEffectsOperationActions)
 
 server.tool(
   "after-effects",
-  `General After Effects control surface. Exact actions by operation: ${afterEffectsActionContract}. Composition creation uses action=create, never add. ${AE_OPERATION_PARAMETER_GUIDE}`,
+  `General After Effects control surface. Exact actions by operation: ${afterEffectsActionContract}. Composition creation uses action=create, never add. ${AE_OPERATION_PARAMETER_GUIDE} ${AE_TEXT_ANIMATOR_GUIDE}`,
   {
     operation: z.enum([
       "inspect",
@@ -1188,7 +1195,7 @@ legacyTool(
           {
             type: "text",
             text: `Bridge test effects command has been queued.\n` +
-                  `Please ensure the "MCP Bridge Auto" panel is open in After Effects.\n` +
+                  `Please keep "After Effects MCP Chat" open with Auto-run enabled in its Bridge tab (or use the optional legacy bridge).\n` +
                   `Use the "get-results" tool after a few seconds to check for the test results.`
           }
         ]

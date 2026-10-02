@@ -8,6 +8,11 @@
 </head>
 <body>
   <main class="app-shell" id="appShell">
+    <nav class="panel-tabs" role="tablist" aria-label="AE MCP panel">
+      <button id="chatTab" type="button" role="tab" aria-selected="true" aria-controls="chatPanel">Chat</button>
+      <button id="bridgeTab" type="button" role="tab" aria-selected="false" aria-controls="bridgePanel" tabindex="-1">Bridge <i id="bridgeTabDot" class="status-dot" aria-hidden="true"></i></button>
+    </nav>
+    <div class="panel-content chat-panel" id="chatPanel" role="tabpanel" aria-labelledby="chatTab">
     <header class="app-header">
       <div class="brand-row">
         <div class="brand-mark" aria-hidden="true">Ae</div>
@@ -41,7 +46,7 @@
         <button class="toolbar-button" id="toolsToggle" type="button" aria-pressed="false">
           <span>Tools</span><b class="count-badge" id="toolsCount">0</b>
         </button>
-        <button class="toolbar-button" id="clearButton" type="button" title="Clear conversation">Clear</button>
+        <button class="toolbar-button" id="clearButton" type="button" title="Stop and start a new conversation">Clear</button>
         <span class="toolbar-spacer"></span>
         <button class="toolbar-button" id="optionsButton" type="button" aria-expanded="false">Options</button>
       </div>
@@ -90,6 +95,27 @@
         </div>
       </div>
     </footer>
+    </div>
+
+    <section class="panel-content bridge-panel" id="bridgePanel" role="tabpanel" aria-labelledby="bridgeTab" hidden>
+      <div class="bridge-card">
+        <h2>MCP Bridge</h2>
+        <p id="bridgeStatusText" role="status">Starting…</p>
+        <p class="bridge-hint" id="bridgeOwnerText">Runs in this panel, including while the Chat tab is selected.</p>
+        <label class="bridge-auto"><input id="bridgeAutoRun" type="checkbox" checked> Auto-run commands</label>
+        <button id="bridgeCheckButton" class="secondary-button" type="button">Check for commands now</button>
+        <dl class="bridge-details">
+          <dt>Engine</dt><dd id="bridgeEngineText">Initializing</dd>
+          <dt>Version</dt><dd id="bridgeVersionText">—</dd>
+          <dt>Command file</dt><dd id="bridgeCommandPath"></dd>
+        </dl>
+      </div>
+      <div class="bridge-card bridge-log-card">
+        <div class="bridge-log-heading"><h2>Command log</h2><button id="bridgeClearLog" class="toolbar-button" type="button">Clear log</button></div>
+        <pre id="bridgeLog" class="bridge-log" role="log" aria-live="polite">Waiting for commands.</pre>
+      </div>
+      <p class="bridge-hint">Keep this combined panel open. Changing tabs does not stop the bridge. The separate mcp-bridge-auto panel is optional.</p>
+    </section>
 
     <div class="toast" id="toast" role="status" hidden></div>
     <div class="lightbox" id="lightbox" hidden>

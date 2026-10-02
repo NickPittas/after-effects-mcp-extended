@@ -18,7 +18,7 @@ Extended capabilities include:
 - Keyframe creation, editing, removal, interpolation, and easing controls
 - Layer creation, parenting, duplication, ordering, and switch management
 - Project import, organization, saving, render-queue operations, and PNG frame capture
-- Text animators with character, word, and line range selectors
+- Native text animator/selector lifecycle with character, word, and line ranges, wiggly and expression selectors, animated values, expressions, and native match-name access
 - Improved bridge response tracking and direct rendered-frame image returns
 - Dockable, resizable ScriptUI bridge panel
 - Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Antigravity CLI (AGY), Kimi CLI, Pi, and OpenCode, with per-provider sessions, chronologically segmented streamed conversations, timestamped expandable tool groups, account/setup controls, viewer/UI screenshots, Stop, and autonomous mode
@@ -111,8 +111,12 @@ and installs all three components:
 
 The setup also adds **After Effects MCP Extended** to Windows Installed Apps so
 it can be removed normally. It does not require Node.js or npm. Restart After
-Effects after installation, open **Window > mcp-bridge-auto.jsx**, then open
-**Window > Extensions > After Effects MCP Chat**.
+Effects after installation and open **Window > Extensions > After Effects MCP Chat**.
+This single panel has **Chat** and **Bridge** tabs. The integrated bridge runs in
+both tabs; the Bridge tab contains auto-run, live status, and a timestamped command
+log. It uses a bundled bridge core and does not require the separate ScriptUI
+panel. Keep the combined panel open. The legacy **mcp-bridge-auto.jsx** panel is
+optional; if it is already active, close it to use the integrated bridge controls.
 
 Choose a CLI from the selector in the panel. Codex, Antigravity CLI, and Kimi use
 their official standalone Windows installers. Claude Code, Pi, and OpenCode use
@@ -120,6 +124,10 @@ their official npm packages when Node.js/npm is available; otherwise the panel
 opens that provider's official installation instructions. Sign-in is launched
 only when the user presses **Sign in**. Each provider keeps its own conversation
 session.
+
+**Stop** cancels request preparation and the active harness turn. On Windows, generic harnesses are stopped by terminating the launcher and its complete child-process tree before reporting Stopped. Codex uses its native turn interrupt, with process-tree termination if interruption is not confirmed. Buffered output from cancelled runs is ignored. Pending AE bridge requests owned by this chat are cancelled; unrelated MCP clients are not affected. An AE script already executing cannot be forcibly interrupted safely, and completed edits are not undone.
+
+**Clear** stops the active harness, clears visible messages/tool history, and resets saved harness session IDs (including the Codex thread). The next message starts a fresh conversation without resume/continue flags. Model choices and sign-in credentials are preserved, and historical CLI session files are not deleted.
 
 Use the **Model** row below the CLI selector to choose a model. Each CLI remembers its own choice. The refresh button reloads the available catalog; **Custom model…** accepts an exact model ID or configured alias. Pi and OpenCode use `provider/model-id`. A reasoning selector appears only when the catalog advertises reasoning choices. Model changes apply to the next message and are disabled during a running turn. Returning an override to **CLI default** starts a fresh harness session so a resumed conversation cannot retain the previous override; the visible chat history remains available. Claude offers its stable CLI aliases and custom IDs because its CLI does not expose the same model-list command as the other harnesses.
 
@@ -201,14 +209,59 @@ Go to your client (e.g., Claude or Cursor) and update your config file:
 
 2. **Open After Effects**
 
-3. **Open the MCP Bridge Auto panel**
-   - In After Effects, go to Window > mcp-bridge-auto.jsx
-   - The panel will automatically check for commands every few seconds
-   - Make sure the "Auto-run commands" checkbox is enabled
+3. **Open the combined Chat and Bridge panel**
+   - In After Effects, go to Window > Extensions > After Effects MCP Chat
+   - The bridge runs automatically while either tab is selected
+   - The Bridge tab provides an "Auto-run commands" checkbox and command log
+   - Alternatively, the legacy Window > mcp-bridge-auto.jsx panel still works
 
 ## 🚀 Usage Guide
 
-Once you have the server running and the MCP Bridge panel open in After Effects, you can control After Effects through the MCP protocol. This allows AI assistants or custom applications to send commands to After Effects.
+Once you have the server running and the combined CEP panel (or optional legacy bridge) open in After Effects, you can control After Effects through the MCP protocol. This allows AI assistants or custom applications to send commands to After Effects.
+
+### Native text animators
+
+Use the existing **after-effects** tool with `operation=text` and
+`action=animator` or `action=selector`. No extra MCP tools are required, and the
+same actions are exposed to Pi and every other chat harness.
+
+For an existing text layer in a 25 fps composition, this single request reveals
+characters over 25 frames without animating the layer's opacity:
+
+```json
+{
+  "operation": "text",
+  "action": "animator",
+  "parameters": {
+    "compName": "Text Demo",
+    "layerIndex": 1,
+    "animatorAction": "add",
+    "animatorName": "Character Reveal",
+    "properties": [{ "property": "opacity", "value": 0 }],
+    "selectors": [{
+      "type": "range",
+      "settings": {
+        "basedOn": "characters",
+        "smoothness": 0,
+        "start": { "keyframes": [{ "time": 0, "value": 0 }, { "time": 1, "value": 100 }] }
+      }
+    }]
+  }
+}
+```
+
+- `animatorAction` / `selectorAction`: `get`, `add`, `update`, `remove` (default `get`).
+- Select existing groups by 1-based `animatorIndex` / `selectorIndex`, or unique names. Rename with `newName`.
+- Animator `properties` accept friendly aliases for transforms, opacity, fill/stroke, tracking/line spacing, blur, and character values/offsets; `matchName` supports additional native properties. Updates can use `remove:true` to remove an animator property.
+- `selectors` accept `range`, `wiggly`, and `expression`. Omitted selectors create a range selector; `selectors:[]` creates none.
+- Selector `settings` accept friendly range controls, or an array of `{propertyPath, value, keyframes, expression}` specs for arbitrary native controls. Expression-selector `amount` accepts an expression spec.
+- Values and selectors can carry keyframes, interpolation/ease options, expressions, or explicit `clearKeys:true`. Times are seconds; divide frames by the composition's frame rate.
+- Get/create/update responses include property paths and keyframes. Use those paths with existing `property` / `keyframe` tools; re-inspect after structural edits because indices may change.
+
+Native AE renderer and per-character 3D restrictions still apply. The bridge does
+not silently switch layer/renderer modes or replace native text animation with
+layer transforms. Failed creation removes only the newly created group;
+updates are not transactional, so use AE Undo if an update fails partway through.
 
 ### 📘 Creating Compositions
 

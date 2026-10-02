@@ -262,7 +262,7 @@ try {
     }
     $codexLine = if ($codexRegistered) { "Codex MCP registration: complete." } elseif ($codex) { "Codex was found, but MCP registration needs to be retried from the chat panel." } else { "Codex CLI is not installed yet; the AE chat panel can install it for you." }
     $runningLine = if (Get-Process AfterFX -ErrorAction SilentlyContinue) { "`nAfter Effects is open and must be restarted." } else { "" }
-    Show-SetupMessage ("Installation complete.`n`nAfter Effects: " + ($installedVersions -join ", ") + "`n" + $codexLine + $runningLine + "`n`nIn After Effects open:`n1. Window > mcp-bridge-auto.jsx`n2. Window > Extensions > After Effects MCP Chat`n`nAlso enable Preferences > Scripting & Expressions > Allow Scripts to Write Files and Access Network.")
+    Show-SetupMessage ("Installation complete.`n`nAfter Effects: " + ($installedVersions -join ", ") + "`n" + $codexLine + $runningLine + "`n`nIn After Effects open Window > Extensions > After Effects MCP Chat.`nThe panel includes Chat and Bridge tabs; the separate mcp-bridge-auto panel is optional.`n`nAlso enable Preferences > Scripting & Expressions > Allow Scripts to Write Files and Access Network.")
     "[$(Get-Date -Format o)] Installation completed" | Add-Content -LiteralPath $logPath -Encoding UTF8
     exit 0
 } catch {

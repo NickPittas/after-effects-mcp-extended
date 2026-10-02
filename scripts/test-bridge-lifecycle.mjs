@@ -54,6 +54,7 @@ const sandbox = {
   Folder: FakeFolder,
   $: { global: { __aeMcpHeadlessBridgeMode: true } },
   app: {
+    beginUndoGroup() {}, endUndoGroup() {},
     project: { numItems: 0, bitsPerChannel: 16, activeItem: null, file: null, dirty: false },
     scheduleTask(expression, delay, repeat) { const id = nextTaskId++; scheduled.set(id, { expression, delay, repeat }); return id; },
     cancelTask(id) { scheduled.delete(id); },
@@ -64,6 +65,28 @@ const sandbox = {
 vm.createContext(sandbox);
 const source = fs.readFileSync("src/scripts/mcp-bridge-auto.jsx", "utf8").replace(/^#target.*$/gm, "");
 vm.runInContext(source, sandbox, { filename: "mcp-bridge-auto.jsx" });
+
+// Load the actual 5k-line core inside a caller scope, as evalFile can do. Its
+// declarations deliberately do not exist globally after initialization.
+const scoped = {File:FakeFile,Folder:FakeFolder,JSON,Math,Date,$:{global:{}},app:sandbox.app};
+vm.createContext(scoped);
+scoped.$.evalFile = function(file) {
+  assert.equal(file.fsName,"C:/Extension/jsx/mcp-bridge-core.jsx");
+  vm.runInContext("(function(){ eval("+JSON.stringify(source)+"); })();",scoped);
+};
+files.set("C:/Extension/jsx/mcp-bridge-core.jsx",source);
+vm.runInContext(fs.readFileSync("cep/jsx/host.jsx","utf8"),scoped);
+assert.equal(JSON.parse(scoped.aeMcpChatInitializeBridgeCore("C:/Extension")).ok,true);
+assert.equal(typeof scoped.checkForCommands,"undefined","test must simulate caller-local core declarations");
+files.set("C:/Documents/ae-mcp-bridge/ae_command.json",JSON.stringify({command:"aeCommand",id:"scoped-command",args:{operation:"inspect",action:"get",scope:"capabilities"},status:"pending",bridgeInstanceId:"cep-scoped"}));
+assert.equal(JSON.parse(scoped.aeMcpChatProcessBridgeCommand("cep-scoped","scoped-command","C:/Extension")).ok,true,"headless export did not retain real core functions/state");
+const scopedResult=JSON.parse(files.get("C:/Documents/ae-mcp-bridge/ae_mcp_result.json"));
+assert.equal(scopedResult.status,"success","real capabilities inspection failed through scoped API");
+assert.match(JSON.stringify(scopedResult.data),/animator/);
+files.set("C:/Documents/ae-mcp-bridge/ae_command.json","{");
+const malformedAck=JSON.parse(scoped.aeMcpChatProcessBridgeCommand("cep-scoped","bad-command","C:/Extension"));
+assert.equal(malformedAck.ok,false,"checker swallowed a transport parse error and reported success");
+assert.match(malformedAck.error,/SyntaxError/);
 
 const commandPath = "C:/Documents/ae-mcp-bridge/ae_command.json";
 const resultPath = "C:/Documents/ae-mcp-bridge/ae_mcp_result.json";

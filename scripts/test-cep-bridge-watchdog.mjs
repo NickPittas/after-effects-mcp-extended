@@ -9,12 +9,16 @@ const commandPath = documents + "/ae-mcp-bridge/ae_command.json";
 const resultPath = documents + "/ae-mcp-bridge/ae_mcp_result.json";
 
 function element() {
+  const handlers = {};
+  const attributes = {};
   return {
     checked: false, disabled: false, hidden: false, value: "", textContent: "",
     innerHTML: "", className: "", dataset: {}, style: {}, scrollHeight: 0,
     scrollTop: 0, clientHeight: 0,
-    addEventListener() {}, appendChild() {}, replaceChildren() {}, scrollTo() {},
-    focus() {}, setAttribute() {},
+    addEventListener(name, handler) { handlers[name] = handler; },
+    dispatch(name) { handlers[name]?.({key:"Enter",preventDefault(){},stopPropagation(){}}); },
+    click() { this.dispatch("click"); }, appendChild() {}, replaceChildren() {}, scrollTo() {},
+    focus() {}, setAttribute(name, value) { attributes[name] = value; }, attributes,
   };
 }
 
@@ -30,8 +34,11 @@ function runScenario(initialHeartbeat, processResult = "success", commandStatus 
   ]);
   const intervals = [];
   const hostCalls = [];
+  const storage = new Map();
+  const windowEvents = {};
   let processCallCount = 0;
   let initializeCallCount = 0;
+  let pendingInitialization = null;
   const elements = new Map();
   const getElement = (id) => {
     if (!elements.has(id)) elements.set(id, element());
@@ -51,9 +58,11 @@ function runScenario(initialHeartbeat, processResult = "success", commandStatus 
     addEventListener() {},
     evalScript(script, callback) {
       hostCalls.push(script);
-      if (script === "aeMcpChatInitializeBridgeCore()") {
+      if (script.startsWith("aeMcpChatInitializeBridgeCore(")) {
         initializeCallCount++;
-        if (!(processResult === "init-lost-once" && initializeCallCount === 1)) callback('{"ok":true}');
+        if (processResult === "init-error") callback('{"ok":false,"error":"Missing bundled core"}');
+        else if (processResult === "init-slow") pendingInitialization = callback;
+        else if (!(processResult === "init-lost-once" && initializeCallCount === 1)) callback('{"ok":true}');
       }
       else if (script.indexOf("aeMcpChatProcessBridgeCommand(") === 0) {
         processCallCount++;
@@ -62,6 +71,9 @@ function runScenario(initialHeartbeat, processResult = "success", commandStatus 
           command.status = "completed";
           files.set(commandPath, JSON.stringify(command));
           files.set(resultPath, JSON.stringify({ status: "success", _commandId: command.id }));
+          // The shared core temporarily writes its own instance ID. The CEP
+          // callback must restore ownership immediately, without a 5s delay.
+          files.set(heartbeatPath, JSON.stringify({state:"ready",autoRun:true,instanceId:"headless-core",updatedAt:FakeDate.now()}));
           callback('{"ok":true}');
         } else if (processResult === "lost-callback-once" && processCallCount === 1) {
           const command = JSON.parse(files.get(commandPath));
@@ -98,9 +110,9 @@ function runScenario(initialHeartbeat, processResult = "success", commandStatus 
     createDocumentFragment: element,
   };
   const sandbox = {
-    window: { location: { search: "" }, cep, __adobe_cep__: host },
+    window: { location: { search: "" }, cep, __adobe_cep__: host, addEventListener(name, callback) { windowEvents[name] = callback; } },
     document,
-    localStorage: { getItem() { return null; } },
+    localStorage: { getItem(key) { return storage.get(key) ?? null; }, setItem(key, value) { storage.set(key, value); } },
     console,
     JSON,
     Date: FakeDate,
@@ -126,6 +138,8 @@ function runScenario(initialHeartbeat, processResult = "success", commandStatus 
     currentTime: () => now,
     getProcessCallCount: () => processCallCount,
     getInitializeCallCount: () => initializeCallCount,
+    finishInitialization: () => pendingInitialization?.('{"ok":true}'),
+    getElement, storage, windowEvents,
   };
 }
 
@@ -140,25 +154,64 @@ assert.equal(startupCooldown.getInitializeCallCount(), 1);
 assert.equal(startupCooldown.getProcessCallCount(), 1);
 
 const stale = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 5000 });
-assert(stale.hostCalls.includes("aeMcpChatInitializeBridgeCore()"));
+assert(stale.hostCalls.includes('aeMcpChatInitializeBridgeCore("C:/Extension")'));
 assert(stale.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0));
 assert.equal(JSON.parse(stale.files.get(commandPath)).status, "completed");
 assert.match(JSON.parse(stale.files.get(commandPath)).bridgeInstanceId, /^cep-/);
 assert.match(JSON.parse(stale.files.get(heartbeatPath)).instanceId, /^cep-/);
 
 const closed = runScenario({ version: "1.10.7", state: "closed", autoRun: false, instanceId: "scriptui", updatedAt: Date.now() - 5000 });
-assert(!closed.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP restarted an intentionally closed bridge");
+assert.equal(closed.getProcessCallCount(), 1, "closing the optional legacy panel must not disable the combined panel");
 closed.files.set(heartbeatPath, JSON.stringify({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui-reopened", updatedAt: closed.currentTime() }));
 closed.watchdog.callback();
 closed.files.set(heartbeatPath, JSON.stringify({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui-reopened", updatedAt: closed.currentTime() - 6000 }));
 closed.watchdog.callback();
 assert(closed.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP did not recover after the bridge panel reopened and later became stale");
 
-const paused = runScenario({ version: "1.10.7", state: "paused", autoRun: false, instanceId: "scriptui", updatedAt: Date.now() - 6000 });
+const paused = runScenario({ version: "1.10.7", state: "paused", autoRun: false, instanceId: "scriptui", updatedAt: Date.now() + 4001 });
 assert(!paused.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP ignored the Auto-run pause state");
+assert.equal(paused.getElement("bridgeAutoRun").disabled, true, "legacy controls must not race integrated controls");
+
+const restarted = runScenario({ version: "1.10.9", state: "closed", autoRun: false, instanceId: "cep-previous-session", updatedAt: Date.now() - 60000 });
+assert.equal(restarted.getProcessCallCount(), 1, "restored CEP panel did not acquire a fresh bridge after AE restart");
+const tabCalls = restarted.hostCalls.length;
+restarted.getElement("bridgeTab").click();
+assert.equal(restarted.getElement("chatPanel").hidden, true);
+assert.equal(restarted.getElement("bridgePanel").hidden, false);
+assert.equal(restarted.getElement("bridgeTab").attributes["aria-selected"], "true");
+restarted.getElement("chatTab").click();
+assert.equal(restarted.getElement("chatPanel").hidden, false);
+assert.equal(restarted.hostCalls.length, tabCalls, "switching tabs must not execute or reinitialize the bridge");
+restarted.getElement("bridgeAutoRun").checked = false;
+restarted.getElement("bridgeAutoRun").dispatch("change");
+assert.equal(JSON.parse(restarted.files.get(heartbeatPath)).state, "paused");
+assert.equal(restarted.storage.get("aeMcpBridgeEnabled"), "false");
+const restartOwner = JSON.parse(restarted.files.get(heartbeatPath)).instanceId;
+restarted.files.set(commandPath, JSON.stringify({command:"aeCommand",id:"after-pause",args:{operation:"inspect",action:"get"},status:"pending",bridgeInstanceId:restartOwner}));
+restarted.advance(1000);
+restarted.watchdog.callback();
+assert.equal(restarted.getProcessCallCount(), 1, "paused integrated bridge executed a command");
+restarted.getElement("bridgeAutoRun").checked = true;
+restarted.getElement("bridgeAutoRun").dispatch("change");
+assert.equal(restarted.getProcessCallCount(), 2, "resuming integrated bridge did not execute the waiting command");
+assert.match(restarted.getElement("bridgeLog").textContent, /inspect\/get/);
+restarted.windowEvents.beforeunload();
+assert.equal(JSON.parse(restarted.files.get(heartbeatPath)).state, "closed", "closing the owning CEP panel did not release the bridge");
+
+const noLegacy = runScenario(null);
+assert.equal(noLegacy.getProcessCallCount(), 1, "combined panel still requires a separate ScriptUI panel");
+const ownerAfterFirstCommand=JSON.parse(noLegacy.files.get(heartbeatPath)).instanceId;
+noLegacy.files.set(commandPath,JSON.stringify({command:"aeCommand",id:"expired-edit",args:{},status:"pending",bridgeInstanceId:ownerAfterFirstCommand,timestamp:new Date(noLegacy.currentTime()-60000).toISOString(),timeoutMs:15000}));
+noLegacy.watchdog.callback();
+assert.equal(noLegacy.getProcessCallCount(),1,"an expired edit was replayed after recovery");
+assert.match(JSON.parse(noLegacy.files.get(resultPath)).message,/expired/);
+const initError = runScenario(null,"init-error");
+initError.watchdog.callback();
+assert.equal(initError.getProcessCallCount(),0);
+assert.match(initError.getElement("bridgeStatusText").textContent,/Missing bundled core/);
 
 const idleStale = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "completed");
-assert(!idleStale.hostCalls.includes("aeMcpChatInitializeBridgeCore()"), "CEP evaluated host code without a pending command");
+assert(!idleStale.hostCalls.some(call=>call.startsWith("aeMcpChatInitializeBridgeCore(")), "CEP evaluated host code without a pending command");
 
 const relinquish = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "completed");
 relinquish.files.set(heartbeatPath, JSON.stringify({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui-recovered", updatedAt: relinquish.currentTime() }));
@@ -186,7 +239,7 @@ assert.equal(JSON.parse(callbackLost.files.get(commandPath)).status, "completed"
 const initializationLost = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "init-lost-once");
 assert.equal(initializationLost.getInitializeCallCount(), 1);
 assert.equal(initializationLost.getProcessCallCount(), 0);
-initializationLost.advance(3501);
+initializationLost.advance(30001);
 initializationLost.watchdog.callback();
 assert.equal(initializationLost.getInitializeCallCount(), 1, "host initialization retried without backoff");
 initializationLost.advance(1501);
@@ -195,10 +248,58 @@ assert.equal(initializationLost.getInitializeCallCount(), 2, "lost initializatio
 assert.equal(initializationLost.getProcessCallCount(), 1);
 assert.equal(JSON.parse(initializationLost.files.get(commandPath)).status, "completed");
 
+const slowInitialization = runScenario(null,"init-slow");
+slowInitialization.advance(8000);
+slowInitialization.watchdog.callback();
+assert.equal(slowInitialization.getInitializeCallCount(),1,"cold initialization was duplicated/discarded after 3 seconds");
+assert.equal(JSON.parse(slowInitialization.files.get(heartbeatPath)).hostPhase,"initializing");
+slowInitialization.finishInitialization();
+assert.equal(slowInitialization.getProcessCallCount(),1,"successful slow initialization callback was discarded");
+
 const runningLost = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "running-no-callback");
 runningLost.advance(7001);
 runningLost.watchdog.callback();
 assert.equal(JSON.parse(runningLost.files.get(commandPath)).status, "error", "interrupted running command remained wedged");
 assert.match(JSON.parse(runningLost.files.get(resultPath)).message, /lifecycle transition/);
 
-console.log("CEP bridge watchdog integration tests passed.");
+// The combined panel ships its own core, and must not inherit a closed legacy
+// panel's stale UI references or paused checkbox. No AE instance is required.
+let coreLoads = 0;
+let coreChecks = 0;
+const coreSandbox = {
+  File: function (filePath) {
+    this.fsName = filePath;
+    this.exists = filePath === "C:/Extension/jsx/mcp-bridge-core.jsx";
+    this.parent = {fsName:"C:/Extension/jsx",parent:{fsName:"C:/Extension"}};
+  },
+  Folder:{startup:{fsName:"C:/AE/Support Files"}},
+  JSON,
+  aeMcpHeadlessBridgeMode:false,
+  autoRunCheckbox:{value:false},
+  checkForCommands() { throw new Error("Closed legacy UI must not be reused"); },
+  aeCommand() {},
+  $:{fileName:"C:/Extension/jsx/host.jsx",global:{},evalFile(file) {
+    assert.equal(file.fsName,"C:/Extension/jsx/mcp-bridge-core.jsx");
+    assert.equal(coreSandbox.$.global.__aeMcpHeadlessBridgeMode,true);
+    coreLoads++;
+    coreSandbox.aeMcpHeadlessBridgeMode = true;
+    coreSandbox.autoRunCheckbox = {value:true};
+    coreSandbox.checkForCommands = () => { coreChecks++; };
+    coreSandbox.$.global.__aeMcpHeadlessCore = {headless:true,recover(){},check(){coreChecks++;return {ok:true};}};
+  }},
+};
+vm.createContext(coreSandbox);
+vm.runInContext(fs.readFileSync("cep/jsx/host.jsx", "utf8"), coreSandbox);
+assert.equal(JSON.parse(coreSandbox.aeMcpChatInitializeBridgeCore("C:/Extension")).ok,true);
+assert.equal(coreLoads,1);
+assert.equal(coreSandbox.autoRunCheckbox.value,true);
+assert.equal(JSON.parse(coreSandbox.aeMcpChatInitializeBridgeCore()).reused,true);
+assert.equal(coreLoads,1,"already-loaded headless core was unnecessarily reinitialized");
+delete coreSandbox.$.global.__aeMcpHeadlessCore; // scripting engine state was reset
+assert.equal(JSON.parse(coreSandbox.aeMcpChatProcessBridgeCommand("cep-test")).ok,true);
+assert.equal(coreLoads,2,"closed legacy state was retained after panel migration");
+assert.equal(coreChecks,1);
+const installerSource = fs.readFileSync("install-cep.ps1","utf8");
+assert.match(installerSource,/Copy-Item[^\r\n]*bridgeCoreSource[^\r\n]*mcp-bridge-core/);
+assert.match(fs.readFileSync("installer/windows/build-installer.ps1","utf8"),/cep\\jsx\\mcp-bridge-core.jsx/);
+console.log("CEP bridge watchdog and combined panel integration tests passed.");

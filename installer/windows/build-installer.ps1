@@ -62,6 +62,7 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "assets\pi-after-effects-extension.t
 Copy-Item -LiteralPath (Join-Path $repoRoot "cep\bin\launch-chat.vbs") -Destination (Join-Path $payloadRoot "app\launch-chat.vbs") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "build\scripts\mcp-bridge-auto.jsx") -Destination (Join-Path $payloadRoot "bridge\mcp-bridge-auto.jsx") -Force
 Copy-Item -Path (Join-Path $repoRoot "cep") -Destination $payloadRoot -Recurse -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "build\scripts\mcp-bridge-auto.jsx") -Destination (Join-Path $payloadRoot "cep\jsx\mcp-bridge-core.jsx") -Force
 Copy-Item -LiteralPath (Join-Path $installerRoot "uninstall.ps1") -Destination (Join-Path $payloadRoot "support\uninstall.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $installerRoot "uninstall.vbs") -Destination (Join-Path $payloadRoot "support\uninstall.vbs") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $payloadRoot "LICENSE") -Force

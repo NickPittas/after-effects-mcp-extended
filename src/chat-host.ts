@@ -37,7 +37,7 @@ type ActivityEvent = {
   kind: "afterEffects" | "tool" | "command" | "files" | "search";
   label: string;
   detail: string;
-  status: "running" | "completed" | "failed";
+  status: "running" | "completed" | "failed" | "cancelled";
   time: string;
   sequence?: number;
 };
@@ -99,7 +99,7 @@ type ChatRequest = {
   modelChoice?: ModelChoice;
 };
 
-const VERSION = "1.10.8";
+const VERSION = "1.10.11";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -349,12 +349,46 @@ const savedSettings = loadSettings();
 for (const provider of PROVIDER_ORDER) {
   try { state.modelChoices[provider] = normalizeModelChoice(savedSettings.modelChoices?.[provider]); } catch { state.modelChoices[provider] = { ...DEFAULT_MODEL_CHOICE }; }
 }
-// A prompt/tool-contract update must start fresh harness sessions. Several CLIs
-// freeze their system prompt when a session is created, so resuming an older
-// session would preserve obsolete After Effects instructions.
-const providerSessions: Partial<Record<CliProviderId, string>> = savedSettings.version === VERSION
+// Refresh frozen system instructions when the tool contract changes. Visible
+// transcript and saved model choices remain available across this migration.
+function compatibleSessionVersion(version: unknown): boolean {
+  return version === VERSION;
+}
+const providerSessions: Partial<Record<CliProviderId, string>> = compatibleSessionVersion(savedSettings.version)
   ? savedSettings.providerSessions || {}
   : {};
+let conversationGeneration = 0;
+let preparingGeneration: number | null = null;
+class CancelledChatRequest extends Error {}
+function assertCurrentConversation(generation: number): void {
+  if (generation !== conversationGeneration) throw new CancelledChatRequest("Chat request cancelled.");
+}
+
+// On Windows, kill the tree while the launcher is still alive. Killing cmd.exe
+// first or returning before taskkill finishes can leave the actual CLI running.
+async function terminateHarnessTree(child: ChildProcess): Promise<void> {
+  if (!child.pid || child.exitCode !== null) return;
+  if (process.platform !== "win32") {
+    child.kill("SIGTERM");
+    await new Promise<void>((resolve) => {
+      const timer = setTimeout(() => { try { child.kill("SIGKILL"); } catch {} resolve(); }, 1000);
+      child.once("close", () => { clearTimeout(timer); resolve(); });
+    });
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    let diagnostic = "";
+    killer.stderr?.on("data", chunk => { diagnostic += String(chunk); });
+    const timer = setTimeout(() => { killer.kill(); reject(new Error("Timed out stopping the CLI process tree.")); }, 5000);
+    killer.once("error", error => { clearTimeout(timer); reject(error); });
+    killer.once("close", code => {
+      clearTimeout(timer);
+      if (code === 0 || child.exitCode !== null) resolve();
+      else reject(new Error(diagnostic.trim() || "The CLI process tree could not be stopped."));
+    });
+  });
+}
 const savedProvider = String(savedSettings.provider || "") === "gemini" ? "agy" : savedSettings.provider;
 if (savedProvider && PROVIDERS[savedProvider]) {
   state.provider = savedProvider;
@@ -366,6 +400,8 @@ type BridgeHeartbeat = {
   autoRun?: boolean;
   instanceId?: string;
   updatedAt?: number | string;
+  hostPhase?: string;
+  lastError?: string | null;
 };
 
 function readBridgeHeartbeat(): { status: ChatState["bridgeStatus"]; message: string; heartbeat: BridgeHeartbeat | null } {
@@ -377,8 +413,9 @@ function readBridgeHeartbeat(): { status: ChatState["bridgeStatus"]; message: st
     if (heartbeat.autoRun === false || heartbeat.state === "paused") {
       return { status: "paused", message: "After Effects bridge Auto-run is disabled.", heartbeat };
     }
+    if (heartbeat.lastError) return { status: "stale", message: `After Effects bridge host error: ${heartbeat.lastError}`, heartbeat };
     if (heartbeat.state === "ready" || heartbeat.state === "checking" || heartbeat.state === "starting") {
-      return { status: "ready", message: "After Effects bridge is ready.", heartbeat };
+      return { status: "ready", message: heartbeat.hostPhase && heartbeat.hostPhase !== "ready" && heartbeat.hostPhase !== "executing" ? `After Effects panel is connected; host phase: ${heartbeat.hostPhase}.` : "After Effects bridge is ready.", heartbeat };
     }
     return { status: "stale", message: `After Effects bridge reported '${heartbeat.state || "unknown"}'.`, heartbeat };
   } catch {
@@ -397,10 +434,11 @@ function updateBridgeHealthState(): void {
   }
 }
 
-async function acquireAeBridgeLock(timeoutMs: number): Promise<() => void> {
+async function acquireAeBridgeLock(timeoutMs: number, generation = conversationGeneration): Promise<() => void> {
   fs.mkdirSync(AE_BRIDGE_DIR, { recursive: true });
   const started = Date.now();
   while (Date.now() - started < timeoutMs) {
+    assertCurrentConversation(generation);
     try {
       const descriptor = fs.openSync(AE_COMMAND_LOCK_PATH, "wx");
       fs.writeFileSync(descriptor, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString(), owner: "chat-host" }));
@@ -435,21 +473,23 @@ async function acquireAeBridgeLock(timeoutMs: number): Promise<() => void> {
   throw new Error("Another After Effects command is still running. Wait for it to finish and try again.");
 }
 
-async function runAeBridgeCommand(operation: string, action: string, parameters: Record<string, unknown> = {}, timeoutMs = 60000): Promise<any> {
+async function runAeBridgeCommand(operation: string, action: string, parameters: Record<string, unknown> = {}, timeoutMs = 60000, generation = conversationGeneration): Promise<any> {
   const initialHealth = readBridgeHeartbeat();
-  if (initialHealth.status !== "ready") throw new Error(`${initialHealth.message} Keep the MCP Bridge panel open with Auto-run enabled.`);
-  const release = await acquireAeBridgeLock(timeoutMs + 5000);
+  if (initialHealth.status !== "ready") throw new Error(`${initialHealth.message} Keep the combined After Effects MCP Chat panel open with Auto-run enabled in its Bridge tab (or use the optional legacy bridge).`);
+  const release = await acquireAeBridgeLock(timeoutMs + 5000, generation);
   const commandId = `chat-${Date.now()}-${process.pid}-${Math.random().toString(16).slice(2)}`;
   try {
+    assertCurrentConversation(generation);
     // A project transition can replace the active bridge while this request is
     // waiting for the shared lock. Address the instance that owns the bridge
     // now, not the one observed before the wait.
     const health = readBridgeHeartbeat();
-    if (health.status !== "ready") throw new Error(`${health.message} Keep the MCP Bridge panel open with Auto-run enabled.`);
+    if (health.status !== "ready") throw new Error(`${health.message} Keep the combined After Effects MCP Chat panel open with Auto-run enabled in its Bridge tab (or use the optional legacy bridge).`);
     writeJsonAtomic(AE_RESULT_PATH, { status: "waiting", _commandId: commandId, message: "Waiting for After Effects" });
     writeJsonAtomic(AE_COMMAND_PATH, {
       command: "aeCommand",
       id: commandId,
+      chatOwnerPid: process.pid,
       args: { operation, action, ...parameters },
       bridgeInstanceId: health.heartbeat?.instanceId || null,
       timeoutMs,
@@ -458,6 +498,7 @@ async function runAeBridgeCommand(operation: string, action: string, parameters:
     });
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      assertCurrentConversation(generation);
       let result: any = null;
       try {
         result = JSON.parse(fs.readFileSync(AE_RESULT_PATH, "utf8"));
@@ -474,18 +515,19 @@ async function runAeBridgeCommand(operation: string, action: string, parameters:
   }
 }
 
-async function prepareAfterEffectsRequest(request: ChatRequest): Promise<ChatRequest> {
+async function prepareAfterEffectsRequest(request: ChatRequest, generation: number): Promise<ChatRequest> {
   const prepared: ChatRequest = { ...request };
   // The CLI already has the After Effects MCP and can inspect the project when
   // the request needs it. A mandatory hidden inspection here used to block
   // every chat message while AE was busy or changing projects.
   if (request.viewerRequested) {
     try {
-      const capture = await runAeBridgeCommand("frame", "capture", {}, 20000);
+      const capture = await runAeBridgeCommand("frame", "capture", {}, 20000, generation);
       const viewerPath = capture?.data?.path || capture?.path;
       if (viewerPath) prepared.viewerPath = String(viewerPath);
       else prepared.viewerError = "After Effects completed the viewer capture but did not return an image path.";
     } catch (error) {
+      if (error instanceof CancelledChatRequest) throw error;
       prepared.viewerError = String(error);
     }
   }
@@ -599,6 +641,7 @@ function openExternalUrl(url: string): void {
 
 class AppServerClient {
   private process: ChildProcessWithoutNullStreams | null = null;
+  private stoppingProcess: ChildProcessWithoutNullStreams | null = null;
   private startPromise: Promise<void> | null = null;
   private nextId = 1;
   private pending = new Map<number, {
@@ -624,8 +667,9 @@ class AppServerClient {
   private async startInternal(): Promise<void> {
     if (!state.cliPath && !checkCodex()) throw new Error("Codex CLI is not installed.");
 
-    const child = spawnCli(state.cliPath!, ["app-server", "--listen", "stdio://"], {
+    const child = spawnCli(state.cliPath!, ["app-server", "--listen", "stdio://", "-c", `mcp_servers.AfterEffectsMCP.env.AE_MCP_CHAT_OWNER_PID="${process.pid}"`], {
       cwd: os.homedir(),
+      env: { ...process.env, AE_MCP_CHAT_OWNER_PID: String(process.pid) },
       stdio: ["pipe", "pipe", "pipe"],
     }) as ChildProcessWithoutNullStreams;
     this.process = child;
@@ -636,7 +680,7 @@ class AppServerClient {
       if (!this.recoveringProtocol && /Custom tool call output is missing/i.test(text)) {
         this.recoveringProtocol = true;
         appendTranscript("system", "Codex conversation context was reset after an interrupted tool call. The visible conversation was preserved.");
-        this.forceStopAndRestart("Codex detected an unfinished tool call in the previous session.");
+        void this.forceStopAndRestart("Codex detected an unfinished tool call in the previous session.").catch(error => logHostError("Codex recovery failed", error));
       }
     });
     child.on("error", (error) => {
@@ -667,6 +711,7 @@ class AppServerClient {
 
     const lines = readline.createInterface({ input: child.stdout });
     lines.on("line", (line) => {
+      if (this.process !== child) return;
       try {
         this.handleLine(line);
       } catch (error) {
@@ -778,16 +823,19 @@ class AppServerClient {
   }
 
   private async ensureThread(): Promise<void> {
+    const generation = conversationGeneration;
     const currentSettings = loadSettings();
-    const remembered = currentSettings.version === VERSION ? currentSettings.threadId : null;
+    const remembered = compatibleSessionVersion(currentSettings.version) ? currentSettings.threadId : null;
     if (remembered) {
       try {
         const resumed = await this.request("thread/resume", { threadId: remembered });
+        assertCurrentConversation(generation);
         state.threadId = resumed.thread.id;
         saveSettings();
         saveState();
         return;
       } catch {
+        assertCurrentConversation(generation);
         // The stored thread may have been removed or created by an older Codex build.
       }
     }
@@ -798,6 +846,7 @@ class AppServerClient {
       sandbox: "workspace-write",
       serviceName: "after-effects-mcp-extended",
     });
+    assertCurrentConversation(generation);
     state.threadId = started.thread.id;
     saveSettings();
     saveState();
@@ -829,11 +878,12 @@ class AppServerClient {
     return { status: "ready", modelSupported: true, models, efforts: [], defaultModel, defaultEffort };
   }
 
-  async sendTurn(request: ChatRequest): Promise<void> {
+  async sendTurn(request: ChatRequest, generation: number): Promise<void> {
     await this.start();
+    assertCurrentConversation(generation);
     if (!state.threadId) await this.ensureThread();
+    assertCurrentConversation(generation);
     if (state.cliStatus !== "ready" || !state.account) throw new Error("Sign in to Codex before starting chat.");
-    if (state.busy) throw new Error("Codex is already working. Stop the current turn or wait for it to finish.");
 
     const prompt = (request.prompt || "").trim();
     if (!prompt) throw new Error("Enter a message first.");
@@ -875,6 +925,7 @@ class AppServerClient {
       }
       else appendTranscript("system", "AE UI capture was skipped because the After Effects window was unavailable or minimized.");
     }
+    assertCurrentConversation(generation);
     appendTranscript("user", prompt, attachments);
 
     // Do not create a response bubble until text actually arrives. Tool calls
@@ -898,60 +949,83 @@ class AppServerClient {
       ...(model ? { model } : {}),
       ...(effort ? { effort } : {}),
     }); } catch (error) {
+      assertCurrentConversation(generation);
       state.busy = false;
       state.activeTurnId = null;
       state.approval = null;
       saveState();
-      if (/timed out/.test(String(error))) this.forceStopAndRestart("Codex did not confirm the new turn.");
+      if (/timed out/.test(String(error))) await this.forceStopAndRestart("Codex did not confirm the new turn.");
       throw error;
     }
+    assertCurrentConversation(generation);
     if (state.busy) state.activeTurnId = result.turn.id;
     saveState();
   }
 
   async stopTurn(): Promise<void> {
-    if (!state.busy) return;
+    if (!this.process) {
+      if (this.stoppingProcess) await this.shutdown("Stopped");
+      return;
+    }
     const turnId = state.activeTurnId;
     state.statusText = "Stopping Codex...";
     state.activity = { kind: "stopping", label: "Stopping" };
     saveState();
 
     if (!state.threadId || !turnId) {
-      this.forceStopAndRestart("The active turn did not expose an interrupt ID.");
+      await this.shutdown("Stopped");
       return;
     }
 
     try {
       await this.request("turn/interrupt", { threadId: state.threadId, turnId }, 5000);
-      setTimeout(() => {
-        if (state.busy && state.activeTurnId === turnId) {
-          this.forceStopAndRestart("Codex did not confirm the interrupt.");
-        }
-      }, 4000);
+      const deadline = Date.now() + 2000;
+      while (state.activeTurnId === turnId && state.busy && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+      if (state.activeTurnId === turnId && state.busy) await this.shutdown("Stopped");
+      state.statusText = "Stopped";
+      state.activity = { kind: "idle", label: "Stopped" };
+      saveState();
     } catch (error) {
       logHostError("Turn interrupt failed", error);
-      this.forceStopAndRestart("Codex did not respond to Stop.");
+      await this.shutdown("Stopped");
     }
   }
 
-  private forceStopAndRestart(detail: string): void {
-    const child = this.process;
+  async shutdown(label: string): Promise<void> {
+    const child = this.process || this.stoppingProcess;
     if (child) {
       this.intentionallyStopped.add(child);
-      try { child.kill(); } catch (error) { logHostError("Unable to terminate Codex app-server", error); }
+      this.process = null; // Ignore buffered output from the terminated session.
+      this.stoppingProcess = child;
+      this.rejectPending(new CancelledChatRequest(label));
+      await terminateHarnessTree(child);
+      this.stoppingProcess = null;
     }
-    this.process = null;
-    this.rejectPending(new Error(detail));
+    this.assistantEntry = null;
     state.threadId = null;
-    saveSettings();
-    state.busy = false;
     state.activeTurnId = null;
+    state.busy = false;
     state.approval = null;
+    saveSettings();
+  }
+
+  private async forceStopAndRestart(detail: string): Promise<void> {
+    const generation = conversationGeneration;
+    state.statusText = "Stopping Codex for recovery...";
+    state.activity = { kind: "stopping", label: "Stopping", detail };
+    saveState();
+    await this.shutdown(detail);
+    if (generation !== conversationGeneration) return;
     state.statusText = "Stopped";
     state.activity = { kind: "idle", label: "Stopped" };
     state.error = null;
     saveState();
     setTimeout(() => {
+      // Stop/Clear supersedes recovery; never resurrect a cancelled session.
+      if (generation !== conversationGeneration || state.provider !== "codex" || state.busy) {
+        this.recoveringProtocol = false;
+        return;
+      }
       void this.start().then(() => {
         this.recoveringProtocol = false;
       }).catch((error) => {
@@ -1067,6 +1141,12 @@ class AppServerClient {
     }
 
     const params = message.params || {};
+    if (/^(turn|item)\//.test(message.method || "")) {
+      if (state.provider !== "codex" || !state.busy) return;
+      if (params.threadId && params.threadId !== state.threadId) return;
+      const eventTurn = params.turnId || params.turn?.id;
+      if (eventTurn && state.activeTurnId && eventTurn !== state.activeTurnId) return;
+    }
     if (message.method === "turn/started") {
       state.activeTurnId = params.turn?.id || state.activeTurnId;
       state.busy = true;
@@ -1524,18 +1604,19 @@ async function startGenericLogin(): Promise<void> {
 
 class GenericCliClient {
   private child: ChildProcess | null = null;
+  private stopping = false;
   private assistantEntry: TranscriptEntry | null = null;
   private hasStreamedText = false;
   private activityIds = new Set<string>();
   private providerError: string | null = null;
 
-  async sendTurn(request: ChatRequest): Promise<void> {
+  async sendTurn(request: ChatRequest, generation: number): Promise<void> {
     if (state.provider === "codex") throw new Error("Codex uses the app-server adapter.");
     if (!state.cliPath || state.cliStatus !== "ready") throw new Error(`Sign in to ${state.providerName} before starting chat.`);
-    if (state.busy) throw new Error(`${state.providerName} is already working.`);
     const prompt = (request.prompt || "").trim();
     if (!prompt) throw new Error("Enter a message first.");
     this.providerError = null;
+    this.stopping = false;
     this.hasStreamedText = false;
 
     const attachments: Array<{ kind: "viewer" | "aeUi"; label: string; path: string }> = [];
@@ -1566,6 +1647,7 @@ class GenericCliClient {
     const promptText = `${prompt}${contextText}${contextNotice}${attachmentText}${noticeText}`;
     const promptFile = path.join(ATTACHMENT_DIR, `${state.provider}-prompt-${Date.now()}.txt`);
     fs.writeFileSync(promptFile, promptText, "utf8");
+    assertCurrentConversation(generation);
     appendTranscript("user", prompt, attachments);
 
     const mcpExecutable = writeProviderMcpConfig();
@@ -1604,18 +1686,18 @@ class GenericCliClient {
     saveState();
 
     const child = spawnCli(state.cliPath, runSpec.args, {
-      cwd: CHAT_DIR, env: runSpec.env, stdio: ["pipe", "pipe", "pipe"],
+      cwd: CHAT_DIR, env: { ...runSpec.env, AE_MCP_CHAT_OWNER_PID: String(process.pid) }, stdio: ["pipe", "pipe", "pipe"],
     });
     this.child = child;
     if (runSpec.stdinText) child.stdin?.end(runSpec.stdinText);
     else child.stdin?.end();
     const output = readline.createInterface({ input: child.stdout! });
-    output.on("line", (line) => this.handleLine(provider, line));
+    output.on("line", (line) => { if (this.child === child && !this.stopping && generation === conversationGeneration) this.handleLine(provider, line); });
     let stderr = "";
     child.stderr?.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", (error) => this.finish(false, String(error)));
+    child.on("error", (error) => { if (this.child === child && !this.stopping) this.finish(false, String(error)); });
     child.on("close", (code) => {
-      if (this.child !== child) return;
+      if (this.child !== child || this.stopping) return;
       const failed = code !== 0 || Boolean(this.providerError);
       this.finish(!failed, this.providerError || (failed ? stderr.trim() || `${state.providerName} exited with code ${code}` : undefined));
       if ((provider === "pi" || provider === "kimi") && code === 0) providerSessions[provider] = "continue";
@@ -1668,22 +1750,21 @@ class GenericCliClient {
 
   async stopTurn(): Promise<void> {
     const child = this.child;
-    if (!child || !state.busy) return;
+    if (!child) return;
     state.statusText = `Stopping ${state.providerName}...`;
     state.activity = { kind: "stopping", label: "Stopping" };
     saveState();
+    this.stopping = true;
+    await terminateHarnessTree(child);
     this.child = null;
-    try { child.kill(); } catch {}
-    if (process.platform === "win32" && child.pid) {
-      spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
-    }
-    this.finish(true);
+    this.stopping = false;
+    this.finish(true, undefined, true);
     state.statusText = "Stopped";
     state.activity = { kind: "idle", label: "Stopped" };
     saveState();
   }
 
-  private finish(success: boolean, error?: string): void {
+  private finish(success: boolean, error?: string, cancelled = false): void {
     this.child = null;
     state.busy = false;
     state.activeTurnId = null;
@@ -1691,7 +1772,7 @@ class GenericCliClient {
     this.hasStreamedText = false;
     this.providerError = null;
     for (const activity of state.activityLog) {
-      if (this.activityIds.has(activity.id) && activity.status === "running") activity.status = success ? "completed" : "failed";
+      if (this.activityIds.has(activity.id) && activity.status === "running") activity.status = cancelled ? "cancelled" : success ? "completed" : "failed";
     }
     this.activityIds.clear();
     if (!success || error) {
@@ -1762,9 +1843,24 @@ async function handleRequest(request: ChatRequest): Promise<void> {
         if (!prompt) throw new Error("Enter a message first.");
         if (state.busy) throw new Error(`${state.providerName} is already working. Stop the current turn or wait for it to finish.`);
         validateModelChoice(state.modelCatalogs[state.provider], state.modelChoices[state.provider] || DEFAULT_MODEL_CHOICE);
-        const preparedRequest = await prepareAfterEffectsRequest(request);
-        if (state.provider === "codex") await appServer.sendTurn(preparedRequest);
-        else await genericCli.sendTurn(preparedRequest);
+        const generation = conversationGeneration;
+        preparingGeneration = generation;
+        state.busy = true;
+        state.statusText = "Preparing request...";
+        state.activity = { kind: "thinking", label: "Preparing request" };
+        saveState();
+        try {
+          const preparedRequest = await prepareAfterEffectsRequest(request, generation);
+          assertCurrentConversation(generation);
+          if (state.provider === "codex") await appServer.sendTurn(preparedRequest, generation);
+          else await genericCli.sendTurn(preparedRequest, generation);
+        } catch (error) {
+          if (error instanceof CancelledChatRequest) return;
+          if (generation === conversationGeneration) { state.busy = false; saveState(); }
+          throw error;
+        } finally {
+          if (preparingGeneration === generation) preparingGeneration = null;
+        }
       }
       break;
     case "stop":
@@ -1822,8 +1918,18 @@ async function handleRequest(request: ChatRequest): Promise<void> {
       openExternalUrl(PROVIDERS[state.provider].docsUrl);
       break;
     case "clearTranscript":
+      await appServer.shutdown("New conversation");
+      for (const provider of PROVIDER_ORDER) delete providerSessions[provider];
       state.transcript = [];
       state.activityLog = [];
+      state.threadId = null;
+      state.activeTurnId = null;
+      state.approval = null;
+      state.busy = false;
+      state.error = null;
+      state.statusText = "New conversation";
+      state.activity = { kind: "idle", label: "New conversation" };
+      saveSettings();
       saveState();
       break;
     default:
@@ -1832,19 +1938,79 @@ async function handleRequest(request: ChatRequest): Promise<void> {
 }
 
 let processing = false;
+let controlInProgress: Promise<void> | null = null;
+function cancelOwnedPendingAeCommand(): void {
+  try {
+    const command = JSON.parse(fs.readFileSync(AE_COMMAND_PATH, "utf8"));
+    if (command.status !== "pending" || command.chatOwnerPid !== process.pid) return;
+    command.status = "error";
+    command.statusUpdatedAt = Date.now();
+    writeJsonAtomic(AE_COMMAND_PATH, command);
+    writeJsonAtomic(AE_RESULT_PATH, { status: "error", _commandId: command.id, message: "Cancelled by the chat Stop/Clear button before execution." });
+  } catch {}
+}
+async function pollControls(): Promise<void> {
+  if (controlInProgress) return;
+  for (const name of fs.readdirSync(REQUEST_DIR).filter(name => name.endsWith(".json")).sort()) {
+    const filePath = path.join(REQUEST_DIR, name);
+    let request: ChatRequest;
+    try { request = JSON.parse(fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "")); } catch { continue; }
+    if (request.action !== "stop" && request.action !== "clearTranscript") continue;
+    fs.unlinkSync(filePath);
+    conversationGeneration++;
+    // Discard sends already queued at cancellation, not future sends sharing
+    // the same millisecond timestamp or requests from an unrelated MCP client.
+    for (const queuedName of fs.readdirSync(REQUEST_DIR).filter(name => name.endsWith(".json"))) {
+      const queuedPath = path.join(REQUEST_DIR, queuedName);
+      try { if (JSON.parse(fs.readFileSync(queuedPath, "utf8")).action === "send") fs.unlinkSync(queuedPath); } catch {}
+    }
+    cancelOwnedPendingAeCommand();
+    state.statusText = "Stopping...";
+    state.activity = { kind: "stopping", label: "Stopping" };
+    saveState();
+    controlInProgress = (async () => {
+      if (state.provider === "codex") await appServer.stopTurn();
+      else await genericCli.stopTurn();
+      cancelOwnedPendingAeCommand();
+      for (const activity of state.activityLog) if (activity.status === "running") activity.status = "cancelled";
+      preparingGeneration = null;
+      state.busy = false;
+      state.activeTurnId = null;
+      state.approval = null;
+      state.error = null;
+      state.statusText = "Stopped";
+      state.activity = { kind: "idle", label: "Stopped" };
+      if (request.action === "clearTranscript") await handleRequest(request);
+      saveState();
+    })().catch(error => {
+      state.error = String(error);
+      state.statusText = "Unable to stop the harness";
+      state.activity = { kind: "error", label: "Stop failed", detail: String(error) };
+      saveState();
+    }).finally(() => { controlInProgress = null; });
+    // Do not await: this lane must remain available while send/preparation is
+    // awaiting a host capture, app-server startup, or turn/start response.
+    return;
+  }
+}
 async function pollRequests(): Promise<void> {
+  await pollControls();
+  if (controlInProgress) return;
   if (processing) return;
   processing = true;
   try {
     const files = fs.readdirSync(REQUEST_DIR).filter((name) => name.toLowerCase().endsWith(".json")).sort();
     for (const name of files) {
+      if (controlInProgress) break;
       const requestPath = path.join(REQUEST_DIR, name);
       try {
+        if (!fs.existsSync(requestPath)) continue;
         const rawRequest = fs.readFileSync(requestPath, "utf8").replace(/^\uFEFF/, "");
         fs.unlinkSync(requestPath);
         const request = JSON.parse(rawRequest) as ChatRequest;
         await handleRequest(request);
       } catch (error) {
+        if (error instanceof CancelledChatRequest) continue;
         state.error = String(error);
         state.statusText = "Chat request failed";
         appendTranscript("system", `Request failed: ${String(error)}`);

@@ -15,6 +15,7 @@
   var lastCompanionLaunch = 0;
   var lastBridgeWakeRequest = 0;
   var bridgeHostReady = false;
+  var bridgeHostError = "";
   var bridgeHostInitializing = false;
   var bridgeHostInitializeStartedAt = 0;
   var bridgeHostInitializeSequence = 0;
@@ -27,7 +28,9 @@
   var activeBridgeHostCallToken = 0;
   var bridgeTakeover = false;
   var bridgeTakeoverSourceInstanceId = "";
-  var bridgeStoppedByPanel = false;
+  var bridgeEnabled = localStorage.getItem("aeMcpBridgeEnabled") !== "false";
+  var bridgeLogEntries = [];
+  var lastBridgeLogSignature = "";
   var bridgeInstanceId = "cep-" + Date.now() + "-" + Math.floor(Math.random() * 100000);
   var lastCepHeartbeatWrite = 0;
   var bridgeRetryAfter = 0;
@@ -38,6 +41,20 @@
   var expandedToolGroups = {};
 
   var elements = {
+    chatTab: document.getElementById("chatTab"),
+    bridgeTab: document.getElementById("bridgeTab"),
+    chatPanel: document.getElementById("chatPanel"),
+    bridgePanel: document.getElementById("bridgePanel"),
+    bridgeTabDot: document.getElementById("bridgeTabDot"),
+    bridgeStatusText: document.getElementById("bridgeStatusText"),
+    bridgeOwnerText: document.getElementById("bridgeOwnerText"),
+    bridgeAutoRun: document.getElementById("bridgeAutoRun"),
+    bridgeCheckButton: document.getElementById("bridgeCheckButton"),
+    bridgeEngineText: document.getElementById("bridgeEngineText"),
+    bridgeVersionText: document.getElementById("bridgeVersionText"),
+    bridgeCommandPath: document.getElementById("bridgeCommandPath"),
+    bridgeLog: document.getElementById("bridgeLog"),
+    bridgeClearLog: document.getElementById("bridgeClearLog"),
     conversation: document.getElementById("conversation"),
     emptyState: document.getElementById("emptyState"),
     jumpLatest: document.getElementById("jumpLatest"),
@@ -92,6 +109,7 @@
   }
 
   var documentsPath = normalizeSystemPath(host.getSystemPath("myDocuments"));
+  var extensionPath = normalizeSystemPath(host.getSystemPath("extension"));
   var chatPath = documentsPath + "/ae-mcp-bridge/codex-chat";
   var requestPath = chatPath + "/requests";
   var statePath = chatPath + "/state.json";
@@ -158,7 +176,7 @@
     bridgeHostInitializeStartedAt = Date.now();
     var initializeToken = ++bridgeHostInitializeSequence;
     activeBridgeHostInitializeToken = initializeToken;
-    host.evalScript("aeMcpChatInitializeBridgeCore()", function (rawResult) {
+    host.evalScript("aeMcpChatInitializeBridgeCore(" + JSON.stringify(extensionPath) + ")", function (rawResult) {
       if (activeBridgeHostInitializeToken !== initializeToken) return;
       bridgeHostInitializing = false;
       bridgeHostInitializeStartedAt = 0;
@@ -169,6 +187,7 @@
         ready = result.ok === true;
       } catch (_) {}
       bridgeHostReady = ready;
+      bridgeHostError = ready ? "" : String(result && result.error || rawResult || "Bridge initialization failed");
       if (!ready) {
         if (/modal dialog/i.test(String(rawResult || ""))) bridgeHostEarliestEvalAt = Date.now() + 5000;
         bridgeRetryAfter = Date.now() + 3000;
@@ -177,16 +196,19 @@
     });
   }
 
-  function writeCepBridgeHeartbeat(stateName) {
-    if (Date.now() - lastCepHeartbeatWrite < 700) return;
+  function writeCepBridgeHeartbeat(stateName, force) {
+    if (!force && Date.now() - lastCepHeartbeatWrite < 700) return;
     lastCepHeartbeatWrite = Date.now();
     var heartbeat = {
-      version: "1.10.8",
+      version: "1.10.11",
       state: stateName || (bridgeHostBusy ? "checking" : "ready"),
-      autoRun: !bridgeStoppedByPanel,
+      autoRun: bridgeEnabled && stateName !== "closed",
       instanceId: bridgeInstanceId,
       taskId: "cep-watchdog",
-      lastCommand: "",
+      hostReady: bridgeHostReady,
+      hostPhase: bridgeHostInitializing ? "initializing" : bridgeHostBusy ? "executing" : bridgeHostReady ? "ready" : "awaiting-initialization",
+      lastError: bridgeHostError || null,
+      lastCommand: activeBridgeCommandId || "",
       updatedAt: Date.now()
     };
     cep.fs.writeFile(bridgeHeartbeatPath, JSON.stringify(heartbeat));
@@ -229,6 +251,8 @@
 
   function retargetPendingBridgeCommand(command, targetInstanceId) {
     if (!command || command.status !== "pending") return command;
+    // Do not truncate/rewrite a file AE may be reading on every watchdog tick.
+    if (command.bridgeInstanceId === targetInstanceId) return command;
     if (
       command.bridgeInstanceId &&
       command.bridgeInstanceId !== targetInstanceId &&
@@ -245,6 +269,11 @@
 
   function processPendingBridgeCommand(command) {
     if (!command || command.status !== "pending" || bridgeHostBusy || !bridgeHostReady || Date.now() < bridgeRetryAfter) return;
+    var issuedAt = Date.parse(String(command.timestamp || ""));
+    if (isFinite(issuedAt) && Date.now() - issuedAt > Number(command.timeoutMs || 30000)) {
+      failBridgeCommand(command, "This request expired before After Effects could execute it. Send a fresh request; no edit was performed.");
+      return;
+    }
     bridgeHostBusy = true;
     bridgeHostCallStartedAt = Date.now();
     activeBridgeCommandId = command.id;
@@ -252,7 +281,7 @@
     activeBridgeHostCallToken = callToken;
     writeCepBridgeHeartbeat("checking");
     var commandId = command.id;
-    host.evalScript("aeMcpChatProcessBridgeCommand(" + JSON.stringify(bridgeInstanceId) + ")", function (rawResult) {
+    host.evalScript("aeMcpChatProcessBridgeCommand(" + JSON.stringify(bridgeInstanceId) + "," + JSON.stringify(commandId) + "," + JSON.stringify(extensionPath) + ")", function (rawResult) {
       if (activeBridgeHostCallToken !== callToken) return;
       bridgeHostBusy = false;
       bridgeHostCallStartedAt = 0;
@@ -265,11 +294,15 @@
       } catch (_) {}
       if (!ok) {
         bridgeHostReady = false;
+        bridgeHostError = String(result && result.error || rawResult || "Bridge command could not be completed");
         if (/modal dialog/i.test(String(rawResult || ""))) bridgeHostEarliestEvalAt = Date.now() + 5000;
         var retryCount = resetBridgeCommandForRetry(commandId, rawResult);
         bridgeRetryAfter = Date.now() + Math.min(15000, 1500 * Math.pow(2, Math.min(3, retryCount - 1)));
       }
-      writeCepBridgeHeartbeat(ok ? "ready" : "error");
+      // The shared ExtendScript implementation writes its own heartbeat. Restore
+      // CEP ownership immediately, not after the throttle/stale-owner timeout.
+      if (ok) bridgeHostError = "";
+      writeCepBridgeHeartbeat(ok ? "ready" : "error", true);
     });
   }
 
@@ -298,11 +331,14 @@
   }
 
   function reconcileBridgeHostCall() {
-    if (bridgeHostInitializing && Date.now() - bridgeHostInitializeStartedAt > 3000) {
+    // Loading the full JSX core can exceed 3 seconds on a cold AE launch. Keep
+    // the original callback valid rather than repeatedly discarding success.
+    if (bridgeHostInitializing && Date.now() - bridgeHostInitializeStartedAt > 30000) {
       bridgeHostInitializing = false;
       bridgeHostInitializeStartedAt = 0;
       activeBridgeHostInitializeToken = 0;
       bridgeHostReady = false;
+      bridgeHostError = "After Effects did not complete bridge initialization within 30 seconds.";
       bridgeRetryAfter = Date.now() + 1500;
     }
     if (!bridgeHostBusy || !activeBridgeCommandId) return;
@@ -346,8 +382,9 @@
     }
   }
 
-  // The ScriptUI checker remains primary. CEP takes over only after its
-  // heartbeat is genuinely stale, so a command can never be executed by both.
+  // A healthy legacy panel remains primary for compatibility. Closing it no
+  // longer closes this panel's bridge. Persisted closed/paused CEP heartbeats
+  // from a previous AE session likewise cannot prevent a fresh panel starting.
   function maintainBridgeWatchdog() {
     if (previewMode) return;
     reconcileBridgeHostCall();
@@ -355,27 +392,20 @@
     var age = bridgeHeartbeatAge(heartbeat);
     var stateName = heartbeat ? String(heartbeat.state || "") : "";
     var fromCep = heartbeat && heartbeat.instanceId === bridgeInstanceId;
-
-    if (!fromCep && (stateName === "closed" || stateName === "paused")) {
-      bridgeStoppedByPanel = true;
+    var legacyActive = !fromCep && age < 2000 && stateName !== "closed";
+    renderBridgePanel(heartbeat, legacyActive);
+    if (legacyActive) {
       bridgeTakeover = false;
       bridgeTakeoverSourceInstanceId = "";
       return;
     }
-    if (!fromCep && age < 2000 && (stateName === "ready" || stateName === "starting" || stateName === "checking")) {
-      bridgeStoppedByPanel = false;
-      bridgeTakeover = false;
-      bridgeTakeoverSourceInstanceId = "";
-      return;
-    }
-    if (bridgeStoppedByPanel) return;
-    if (!fromCep && age >= 5000) {
+    if (!fromCep && (age >= 5000 || stateName === "closed")) {
       bridgeTakeover = true;
       bridgeTakeoverSourceInstanceId = heartbeat && heartbeat.instanceId ? String(heartbeat.instanceId) : "";
     }
     if (!bridgeTakeover && !fromCep) return;
-
-    writeCepBridgeHeartbeat(bridgeHostBusy ? "checking" : "ready");
+    if (!bridgeEnabled) { writeCepBridgeHeartbeat("paused"); return; }
+    writeCepBridgeHeartbeat(bridgeHostBusy ? "checking" : bridgeHostError ? "error" : "ready");
     var pendingCommand = retargetPendingBridgeCommand(bridgeCommandRecord(), bridgeInstanceId);
     if (!pendingCommand || pendingCommand.status !== "pending" || Date.now() < bridgeRetryAfter || Date.now() < bridgeHostEarliestEvalAt) return;
     initializeBridgeHost(function (ready) {
@@ -383,6 +413,48 @@
       writeCepBridgeHeartbeat(bridgeHostBusy ? "checking" : "ready");
       processPendingBridgeCommand(pendingCommand);
     });
+  }
+
+  function selectPanelTab(tab) {
+    var chat = tab === "chat";
+    elements.chatPanel.hidden = !chat;
+    elements.bridgePanel.hidden = chat;
+    elements.chatTab.setAttribute("aria-selected", String(chat));
+    elements.bridgeTab.setAttribute("aria-selected", String(!chat));
+    elements.chatTab.setAttribute("tabindex", chat ? "0" : "-1");
+    elements.bridgeTab.setAttribute("tabindex", chat ? "-1" : "0");
+    // Only visibility changes: never dispose/recreate the conversation or timers.
+    if (chat && followLatest) jumpToLatest(false);
+  }
+
+  function renderBridgePanel(heartbeat, legacyActive) {
+    var name = !bridgeEnabled && !legacyActive ? "paused" : heartbeat && bridgeHeartbeatAge(heartbeat) < 5000 ? heartbeat.state : "starting";
+    elements.bridgeStatusText.textContent = bridgeHostError && !legacyActive ? "Bridge error: " + bridgeHostError : name === "checking" ? "Executing command" : name === "ready" ? "Ready — auto-run is on" : name === "paused" ? "Paused — commands will wait" : name === "error" ? "Recovering after a bridge error" : "Starting integrated bridge…";
+    if (!legacyActive && bridgeEnabled && !bridgeHostError && !bridgeHostReady) {
+      elements.bridgeStatusText.textContent = bridgeHostInitializing ? "Initializing After Effects command engine…" : "Panel connected — command engine initializes on request";
+    }
+    elements.bridgeTabDot.className = "status-dot " + (name === "ready" ? "ready" : name === "checking" ? "busy" : name === "error" ? "error" : "");
+    elements.bridgeOwnerText.textContent = legacyActive ? "The optional standalone bridge is active. Close that panel to use the controls here." : "Runs in this panel, including while the Chat tab is selected.";
+    elements.bridgeAutoRun.checked = bridgeEnabled;
+    elements.bridgeAutoRun.disabled = Boolean(legacyActive || bridgeHostBusy);
+    elements.bridgeCheckButton.disabled = Boolean(legacyActive || !bridgeEnabled || bridgeHostBusy);
+    elements.bridgeEngineText.textContent = legacyActive ? "Standalone ScriptUI" : "Integrated CEP";
+    elements.bridgeVersionText.textContent = heartbeat && heartbeat.version || "1.10.11";
+    elements.bridgeCommandPath.textContent = documentsPath + "/ae-mcp-bridge/ae_command.json";
+    var command = bridgeCommandRecord();
+    var result = bridgeResultRecord();
+    if (!command) return;
+    var signature = command.id + ":" + command.status + ":" + (result && result._commandId === command.id ? result.status : "");
+    if (signature === lastBridgeLogSignature) return;
+    lastBridgeLogSignature = signature;
+    var args = command.args || {};
+    var line = (args.operation || command.command || "Command") + "/" + (args.action || "") + " — " + command.status;
+    if (result && result._commandId === command.id && result.status === "error") line += ": " + (result.message || result.error || "Unknown error");
+    bridgeLogEntries.push(new Date().toLocaleTimeString() + "  " + line);
+    if (bridgeLogEntries.length > 100) bridgeLogEntries.shift();
+    var follow = elements.bridgeLog.scrollHeight - elements.bridgeLog.scrollTop - elements.bridgeLog.clientHeight < 40;
+    elements.bridgeLog.textContent = bridgeLogEntries.join("\n");
+    if (follow) elements.bridgeLog.scrollTop = elements.bridgeLog.scrollHeight;
   }
 
   function launchCompanionDirectly() {
@@ -540,7 +612,7 @@
     copy.appendChild(detail);
     var status = document.createElement("span");
     status.className = "tool-state";
-    status.textContent = event.status === "completed" ? "✓" : event.status === "failed" ? "!" : "•••";
+    status.textContent = event.status === "completed" ? "✓" : event.status === "failed" ? "!" : event.status === "cancelled" ? "■" : "•••";
     row.appendChild(color);
     row.appendChild(copy);
     row.appendChild(status);
@@ -553,6 +625,7 @@
     var groupId = events.map(function (event) { return event.id; }).join("|");
     var hasRunning = events.some(function (event) { return event.status === "running"; });
     var hasFailed = events.some(function (event) { return event.status === "failed"; });
+    var hasCancelled = events.some(function (event) { return event.status === "cancelled"; });
     var expanded = hasRunning || hasFailed || expandedToolGroups[groupId] === true;
 
     var header = document.createElement("button");
@@ -567,8 +640,8 @@
     var time = document.createElement("time");
     time.textContent = formatTimestamp(events[0].time);
     var status = document.createElement("span");
-    status.className = "tool-group-status " + (hasFailed ? "failed" : hasRunning ? "running" : "completed");
-    status.textContent = hasFailed ? "Failed" : hasRunning ? "Working" : "Done";
+    status.className = "tool-group-status " + (hasFailed ? "failed" : hasRunning ? "running" : hasCancelled ? "cancelled" : "completed");
+    status.textContent = hasFailed ? "Failed" : hasRunning ? "Working" : hasCancelled ? "Stopped" : "Done";
     header.appendChild(chevron);
     header.appendChild(title);
     header.appendChild(time);
@@ -828,6 +901,29 @@
   }
 
   elements.toolsToggle.setAttribute("aria-pressed", toolsVisible ? "true" : "false");
+  elements.chatTab.addEventListener("click", function () { selectPanelTab("chat"); });
+  elements.bridgeTab.addEventListener("click", function () { selectPanelTab("bridge"); });
+  [elements.chatTab, elements.bridgeTab].forEach(function (tab) {
+    tab.addEventListener("keydown", function (event) {
+      if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+      event.preventDefault();
+      var next = tab === elements.chatTab ? elements.bridgeTab : elements.chatTab;
+      next.click(); next.focus();
+    });
+  });
+  elements.bridgeAutoRun.addEventListener("change", function () {
+    bridgeEnabled = elements.bridgeAutoRun.checked;
+    localStorage.setItem("aeMcpBridgeEnabled", String(bridgeEnabled));
+    lastCepHeartbeatWrite = 0;
+    maintainBridgeWatchdog();
+    renderBridgePanel(readBridgeHeartbeatRecord(), false);
+  });
+  elements.bridgeCheckButton.addEventListener("click", maintainBridgeWatchdog);
+  elements.bridgeClearLog.addEventListener("click", function () { bridgeLogEntries = []; elements.bridgeLog.textContent = "Waiting for commands."; });
+  if (typeof window.addEventListener === "function") window.addEventListener("beforeunload", function () {
+    var heartbeat = readBridgeHeartbeatRecord();
+    if (heartbeat && heartbeat.instanceId === bridgeInstanceId) writeCepBridgeHeartbeat("closed", true);
+  });
   elements.toolsToggle.addEventListener("click", function () {
     toolsVisible = !toolsVisible;
     localStorage.setItem("aeMcpToolsVisible", String(toolsVisible));
@@ -835,7 +931,8 @@
     renderConversation();
   });
   elements.clearButton.addEventListener("click", function () {
-    if (!confirm("Clear the visible CLI conversation and tool history?")) return;
+    // Never leave the harness editing while a confirmation dialog is open.
+    elements.statusText.textContent = "Stopping and starting a new conversation...";
     queueRequest("clearTranscript", {});
   });
   elements.optionsButton.addEventListener("click", function (event) { event.stopPropagation(); togglePopover(elements.optionsPopover, elements.accountPopover, elements.optionsButton); });

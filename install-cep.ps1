@@ -6,6 +6,7 @@ $cepSource = Join-Path $repoRoot "cep"
 $chatBinary = Join-Path $repoRoot "dist\after-effects-codex-chat.exe"
 $mcpBinary = Join-Path $repoRoot "dist\after-effects-mcp-extended.exe"
 $piExtensionSource = Join-Path $repoRoot "assets\pi-after-effects-extension.ts"
+$bridgeCoreSource = Join-Path $repoRoot "src\scripts\mcp-bridge-auto.jsx"
 $chatLauncher = Join-Path $cepSource "bin\launch-chat.vbs"
 $extensionId = "com.nickpittas.aftereffectsmcpextended"
 $extensionRoot = Join-Path $env:APPDATA "Adobe\CEP\extensions\$extensionId"
@@ -26,6 +27,7 @@ if (-not (Test-Path -LiteralPath $mcpBinary)) {
 if (-not (Test-Path -LiteralPath $piExtensionSource)) {
     throw "Pi After Effects adapter is missing."
 }
+if (-not (Test-Path -LiteralPath $bridgeCoreSource)) { throw "Bundled bridge core is missing." }
 
 # Stop only the companion being replaced. Its single-instance lock is shared
 # by the ScriptUI and CEP launchers, so the updated binary will take over.
@@ -58,6 +60,7 @@ if (Test-Path -LiteralPath $extensionRoot) {
 }
 New-Item -ItemType Directory -Path $extensionRoot -Force | Out-Null
 Copy-Item -Path (Join-Path $cepSource "*") -Destination $extensionRoot -Recurse -Force
+Copy-Item -LiteralPath $bridgeCoreSource -Destination (Join-Path $extensionRoot "jsx\mcp-bridge-core.jsx") -Force
 
 $binFolder = Join-Path $extensionRoot "bin"
 New-Item -ItemType Directory -Path $binFolder -Force | Out-Null

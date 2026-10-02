@@ -59,4 +59,8 @@ state.busy=true;
 render();
 assert.equal(getElement("modelSelect").disabled,true);
 assert.equal(getElement("sendButton").disabled,true);
+getElement("stopButton").click();
+assert.equal(queued.at(-1).action,"stop","Stop did not dispatch while busy");
+getElement("clearButton").click();
+assert.equal(queued.at(-1).action,"clearTranscript","Clear did not immediately dispatch cancellation/reset");
 console.log("Model selector UI interactions passed.");

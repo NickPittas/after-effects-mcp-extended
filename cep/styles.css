@@ -45,6 +45,23 @@ button { color: inherit; }
   background: #1c1c1c;
 }
 
+.panel-tabs { display: flex; flex: 0 0 auto; padding: 0 10px; gap: 16px; border-bottom: 1px solid var(--border); background: #1c1c1c; }
+.panel-tabs button { display: inline-flex; align-items: center; gap: 7px; min-height: 34px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--muted); cursor: pointer; }
+.panel-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--purple); }
+.panel-content { flex: 1 1 0; min-height: 0; min-width: 0; }
+.panel-content[hidden] { display: none; }
+.chat-panel { display: flex; flex-direction: column; overflow: hidden; }
+.bridge-panel { padding: 12px; overflow: auto; }
+.bridge-card { padding: 12px; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); }
+.bridge-card h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.bridge-hint { color: var(--muted); line-height: 1.5; }
+.bridge-auto { display: flex; align-items: center; gap: 6px; margin: 16px 0 10px; }
+.bridge-details { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; margin: 16px 0 0; font-size: 11px; }
+.bridge-details dt { color: var(--muted); }
+.bridge-details dd { margin: 0; overflow-wrap: anywhere; }
+.bridge-log-heading { display: flex; align-items: center; justify-content: space-between; }
+.bridge-log { height: 200px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 10px; margin-bottom: 0; font: 11px/1.6 Consolas, monospace; background: var(--bg); border-radius: 5px; }
+
 .brand-row {
   height: 52px;
   display: flex;

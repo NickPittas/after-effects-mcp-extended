@@ -1,4 +1,8 @@
 // Host-side helpers for the dockable CEP chat panel.
+// ScriptPath's initial $.fileName is not reliable in CEP. The browser supplies
+// getSystemPath("extension") explicitly when initializing the bridge.
+var aeMcpChatExtensionRoot = "";
+var aeMcpChatBridgeCoreLoaded = false;
 
 function aeMcpChatEnsureFolder(folder) {
     if (folder.exists) return true;
@@ -46,8 +50,10 @@ function aeMcpChatWakeBridge() {
     }
 }
 
-function aeMcpChatFindBridgeScript() {
+function aeMcpChatFindBridgeScript(extensionRoot) {
     var candidates = [
+        new File((extensionRoot || aeMcpChatExtensionRoot) + "/jsx/mcp-bridge-core.jsx"),
+        new File(aeMcpChatExtensionRoot + "/jsx/mcp-bridge-core.jsx"),
         new File(Folder.startup.fsName + "/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx"),
         new File("C:/Program Files/Adobe/Adobe After Effects 2026/Support Files/Scripts/ScriptUI Panels/mcp-bridge-auto.jsx")
     ];
@@ -57,36 +63,41 @@ function aeMcpChatFindBridgeScript() {
     return null;
 }
 
-// Load the bridge command implementation into the CEP host engine only when
-// the open ScriptUI panel has not already defined it. Headless mode deliberately
+// Load the bundled bridge implementation into the CEP host engine. Never reuse
+// a closed legacy panel's paused checkbox or stale UI objects. Headless mode
 // skips all ScriptUI construction and does not start an AE scheduleTask.
-function aeMcpChatInitializeBridgeCore() {
+function aeMcpChatInitializeBridgeCore(extensionRoot) {
     try {
-        if (typeof checkForCommands === "function" && typeof aeCommand === "function") {
+        if (extensionRoot) aeMcpChatExtensionRoot = extensionRoot;
+        // $.evalFile may run inside the caller's scope. Use an explicitly
+        // exported global API, not declarations that disappear after return.
+        if (aeMcpChatBridgeCoreLoaded && $.global.__aeMcpHeadlessCore && $.global.__aeMcpHeadlessCore.headless) {
             return JSON.stringify({ ok: true, reused: true });
         }
-        var bridgeScript = aeMcpChatFindBridgeScript();
+        var bridgeScript = aeMcpChatFindBridgeScript(extensionRoot);
         if (!bridgeScript) return JSON.stringify({ ok: false, error: "Installed MCP Bridge script was not found." });
         $.global.__aeMcpHeadlessBridgeMode = true;
         try { $.evalFile(bridgeScript); }
         finally { $.global.__aeMcpHeadlessBridgeMode = false; }
-        var ready = typeof checkForCommands === "function" && typeof aeCommand === "function";
-        return JSON.stringify({ ok: ready, reused: false, path: bridgeScript.fsName });
+        var ready = !!($.global.__aeMcpHeadlessCore && $.global.__aeMcpHeadlessCore.headless && typeof $.global.__aeMcpHeadlessCore.check === "function");
+        aeMcpChatBridgeCoreLoaded = ready;
+        return JSON.stringify({ ok: ready, reused: false, path: bridgeScript.fsName, error: ready ? null : "The loaded bridge did not export its headless API: " + bridgeScript.fsName });
     } catch (error) {
         $.global.__aeMcpHeadlessBridgeMode = false;
         return JSON.stringify({ ok: false, error: error.toString() });
     }
 }
 
-function aeMcpChatProcessBridgeCommand(acceptedInstanceId) {
+function aeMcpChatProcessBridgeCommand(acceptedInstanceId, commandId, extensionRoot) {
     try {
-        if (typeof checkForCommands !== "function" || typeof aeCommand !== "function") {
-            var initialized = JSON.parse(aeMcpChatInitializeBridgeCore());
+        if (!aeMcpChatBridgeCoreLoaded || !$.global.__aeMcpHeadlessCore || !$.global.__aeMcpHeadlessCore.headless) {
+            var initialized = JSON.parse(aeMcpChatInitializeBridgeCore(extensionRoot));
             if (!initialized.ok) return JSON.stringify(initialized);
         }
-        if (typeof recoverInterruptedBridgeCommand === "function") recoverInterruptedBridgeCommand();
-        checkForCommands(acceptedInstanceId || null);
-        return JSON.stringify({ ok: true, checkedAt: (new Date()).getTime() });
+        var core = $.global.__aeMcpHeadlessCore;
+        core.recover();
+        var outcome = core.check(acceptedInstanceId || null, commandId || null);
+        return JSON.stringify(outcome || { ok: false, error: "Bridge checker returned no execution acknowledgement." });
     } catch (error) {
         return JSON.stringify({ ok: false, error: error.toString() });
     }

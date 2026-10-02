@@ -23,8 +23,10 @@ function writeHeartbeat() {
   fs.writeFileSync(heartbeatPath, JSON.stringify({ state: "ready", autoRun: true, instanceId: "test-bridge", updatedAt: Date.now() }));
 }
 writeHeartbeat();
+let bridgePaused = false;
 const fakeBridge = setInterval(() => {
   writeHeartbeat();
+  if (bridgePaused) return;
   try {
     const command = JSON.parse(fs.readFileSync(commandPath, "utf8"));
     if (command.status !== "pending") return;
@@ -55,6 +57,7 @@ const fakeRunner = path.join(fakeBin, "fake-cli.mjs");
 fs.writeFileSync(fakeRunner, `
 import fs from "node:fs";
 import path from "node:path";
+import {spawn} from "node:child_process";
 const [provider, ...args] = process.argv.slice(2);
 const requireArg = (value) => { if (!args.includes(value)) throw new Error(provider + " missing required argument " + value + ": " + JSON.stringify(args)); };
 if (args.includes("--version")) { console.log(provider + " 99.0.0"); process.exit(0); }
@@ -84,25 +87,44 @@ if (args[0] === "mcp") { console.log("AfterEffectsMCP ready"); process.exit(0); 
 if (provider === "codex" && args[0] === "login") { console.log("Logged in"); process.exit(0); }
 if (provider === "codex" && args[0] === "app-server") {
   const readline = await import("node:readline");
+  let fixtureTurnTimer;
+  let threadSequence=0;
   readline.createInterface({input:process.stdin}).on("line", line => {
     const request = JSON.parse(line);
     if (!request.id) return;
     let result = {};
     if (request.method === "account/read") result = {account:{type:"chatgpt",email:"fixture@test",planType:"plus"}};
-    if (request.method === "thread/start" || request.method === "thread/resume") result = {thread:{id:"codex-session"}};
+    if (request.method === "thread/start") result = {thread:{id:"codex-session-"+process.pid+"-"+(++threadSequence)}};
+    if (request.method === "thread/resume") result = {thread:{id:request.params.threadId}};
     if (request.method === "model/list") result = {data:[{id:"fixture-model",model:"fixture-model",displayName:"Fixture",supportedReasoningEfforts:[{reasoningEffort:"low"},{reasoningEffort:"high"}],defaultReasoningEffort:"low"},{id:"fixture-default",model:"fixture-default",isDefault:true,supportedReasoningEfforts:[{reasoningEffort:"low"},{reasoningEffort:"high"}],defaultReasoningEffort:"low"}]};
     if (request.method === "config/read") result = {config:{model:"fixture-default",model_reasoning_effort:"low"}};
     if (request.method === "turn/start") {
       fs.appendFileSync(path.join(process.env.USERPROFILE,"codex-turns.jsonl"),JSON.stringify(request.params)+"\\n");
       result = {turn:{id:"codex-turn"}};
+      const prompt=JSON.stringify(request.params.input);
+      if (prompt.includes("START_BLOCK_FIXTURE")) return;
       console.log(JSON.stringify({method:"turn/started",params:{turn:result.turn}}));
-      setTimeout(() => {
+      fixtureTurnTimer=setTimeout(() => {
         console.log(JSON.stringify({method:"item/agentMessage/delta",params:{itemId:"fixture-message",delta:"Codex response"}}));
         console.log(JSON.stringify({method:"turn/completed",params:{turn:{id:"codex-turn",status:"completed"}}}));
-      },40);
+      },prompt.includes("STOP_FIXTURE") ? 60000 : 40);
+    }
+    if (request.method === "turn/interrupt") {
+      clearTimeout(fixtureTurnTimer);
+      console.log(JSON.stringify({method:"turn/completed",params:{threadId:request.params.threadId,turn:{id:request.params.turnId,status:"interrupted"}}}));
     }
     console.log(JSON.stringify({id:request.id,result}));
   });
+} else {
+let fixtureStdin="";
+if (provider === "claude") for await (const chunk of process.stdin) fixtureStdin+=String(chunk);
+fs.appendFileSync(path.join(process.env.USERPROFILE,"harness-runs.jsonl"),JSON.stringify({provider,args,owner:process.env.AE_MCP_CHAT_OWNER_PID})+"\\n");
+const fixturePrompt=args.join(" ")+fixtureStdin+args.filter(arg=>arg.startsWith("@")&&fs.existsSync(arg.slice(1))).map(arg=>fs.readFileSync(arg.slice(1),"utf8")).join(" ");
+if (fixturePrompt.includes("STOP_FIXTURE")) {
+  const worker=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{stdio:"ignore"});
+  fs.writeFileSync(path.join(process.env.USERPROFILE,"worker-"+provider+".json"),JSON.stringify({pid:worker.pid,parent:process.pid}));
+  setTimeout(()=>console.log(JSON.stringify({type:"text",sessionID:"late-session",part:{text:"SHOULD_NOT_ARRIVE"}})),500);
+  setTimeout(()=>{},60000);
 } else {
 if (args.includes("--model")) {
   const selected = args[args.indexOf("--model") + 1];
@@ -115,8 +137,7 @@ for (const instructionFile of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
 }
 if (provider === "claude") {
   requireArg("-p"); requireArg("stream-json"); requireArg("--mcp-config"); requireArg("--dangerously-skip-permissions"); requireArg("--append-system-prompt-file");
-  let stdin = "";
-  for await (const chunk of process.stdin) stdin += String(chunk);
+  const stdin = fixtureStdin;
   if (!stdin.includes("Test claude")) throw new Error("Claude prompt was not delivered through stdin");
   console.log(JSON.stringify({type:"system",session_id:"claude-session"}));
   console.log(JSON.stringify({type:"stream_event",event:{type:"content_block_start",content_block:{type:"tool_use",id:"ae-1",name:"AfterEffectsMCP",input:{operation:"inspect"}}}}));
@@ -161,6 +182,7 @@ if (provider === "claude") {
   } else {
   console.log(JSON.stringify({type:"text",sessionID:"opencode-session",part:{text:"OpenCode response"}}));
   }
+}
 }
 }
 `, "utf8");
@@ -261,6 +283,72 @@ try {
   const settings = JSON.parse(fs.readFileSync(path.join(chatDir, "settings.json"), "utf8"));
   assert.equal(settings.providerSessions.opencode, undefined, "CLI default must clear a session with a sticky model override");
   assert.equal(settings.modelChoices.pi.model, "fixture-model", "Changing one harness must preserve the other model choices");
+  const alive=pid=>{try{process.kill(pid,0);return true;}catch{return false;}};
+  for (const provider of ["claude","agy","kimi","pi","opencode"]) {
+    request("selectProvider",{providerId:provider});
+    await waitFor(value=>value.provider===provider&&!value.busy,provider+" stop test selection");
+    request("send",{prompt:"STOP_FIXTURE "+provider});
+    await waitFor(value=>value.busy&&fs.existsSync(path.join(fakeHome,"worker-"+provider+".json")),provider+" descendant started");
+    const worker=JSON.parse(fs.readFileSync(path.join(fakeHome,"worker-"+provider+".json"),"utf8"));
+    request("stop");
+    await waitFor(value=>!value.busy&&value.statusText==="Stopped",provider+" verified stop",5000);
+    assert.equal(alive(worker.pid),false,provider+" left its descendant alive after reporting Stopped");
+    await new Promise(resolve=>setTimeout(resolve,550));
+    const stopped=JSON.parse(fs.readFileSync(statePath,"utf8"));
+    assert(!stopped.transcript.some(entry=>entry.text==="SHOULD_NOT_ARRIVE"),provider+" accepted buffered output after Stop");
+    request("clearTranscript");
+    await waitFor(value=>value.statusText==="New conversation"&&value.transcript.length===0,provider+" new conversation");
+    const freshSettings=JSON.parse(fs.readFileSync(path.join(chatDir,"settings.json"),"utf8"));
+    assert.deepEqual(freshSettings.providerSessions,{},"Clear retained harness sessions");
+    assert.equal(freshSettings.threadId,null);
+    request("send",{prompt:"Test "+provider});
+    await waitFor(value=>!value.busy&&value.transcript.some(entry=>entry.text===expected[provider]),provider+" fresh response");
+    const lastRun=fs.readFileSync(path.join(fakeHome,"harness-runs.jsonl"),"utf8").trim().split("\n").map(JSON.parse).filter(run=>run.provider===provider).at(-1);
+    assert(!lastRun.args.some(arg=>["--continue","--resume","--conversation","--session"].includes(arg)),provider+" resumed old session after Clear");
+    assert.equal(Number(lastRun.owner),host.pid,"chat owner PID was not propagated to harness");
+  }
+  request("selectProvider",{providerId:"codex"});
+  await waitFor(value=>value.provider==="codex"&&!value.busy,"Codex cancellation selection");
+  request("send",{prompt:"STOP_FIXTURE"});
+  const activeCodex=await waitFor(value=>value.busy&&value.activeTurnId,"Codex active turn");
+  request("stop");
+  await waitFor(value=>!value.busy&&value.statusText==="Stopped","Codex graceful interrupt",5000);
+  request("clearTranscript");
+  await waitFor(value=>value.statusText==="New conversation"&&value.transcript.length===0,"Codex reset");
+  request("send",{prompt:"Test codex"});
+  const freshCodex=await waitFor(value=>!value.busy&&value.transcript.some(entry=>entry.text==="Codex response"),"Codex fresh thread");
+  assert.notEqual(freshCodex.threadId,activeCodex.threadId,"Codex Clear reused the old thread");
+  request("send",{prompt:"START_BLOCK_FIXTURE"});
+  await waitFor(value=>value.busy,"Codex blocked turn/start");
+  request("stop");
+  await waitFor(value=>!value.busy&&value.statusText==="Stopped","Stop preempted blocked turn/start",5000);
+  request("selectProvider",{providerId:"opencode"});
+  await waitFor(value=>value.provider==="opencode"&&!value.busy,"capture cancellation selection");
+  bridgePaused=true;
+  request("send",{prompt:"MUST_NOT_START",viewerRequested:true});
+  await waitFor(value=>value.busy&&fs.existsSync(commandPath)&&JSON.parse(fs.readFileSync(commandPath,"utf8")).status==="pending","pending viewer capture");
+  request("send",{prompt:"QUEUED_MUST_NOT_START"});
+  request("stop");
+  await waitFor(value=>!value.busy&&value.statusText==="Stopped","Stop preempted viewer preparation",3000);
+  assert.equal(JSON.parse(fs.readFileSync(commandPath,"utf8")).status,"error","Stop left the chat-owned AE request queued");
+  bridgePaused=false;
+  await new Promise(resolve=>setTimeout(resolve,350));
+  const afterCaptureStop=JSON.parse(fs.readFileSync(statePath,"utf8"));
+  assert(!afterCaptureStop.transcript.some(entry=>entry.text.includes("MUST_NOT_START")),"cancelled/queued prompt started after Stop");
+  // Clear itself must terminate an active harness, not merely erase bubbles.
+  fs.unlinkSync(path.join(fakeHome,"worker-opencode.json"));
+  request("send",{prompt:"STOP_FIXTURE clear-directly"});
+  await waitFor(value=>value.busy&&fs.existsSync(path.join(fakeHome,"worker-opencode.json")),"active Clear fixture");
+  const clearWorker=JSON.parse(fs.readFileSync(path.join(fakeHome,"worker-opencode.json"),"utf8"));
+  request("clearTranscript");
+  await waitFor(value=>!value.busy&&value.statusText==="New conversation"&&value.transcript.length===0,"Clear terminated active tree",5000);
+  assert.equal(alive(clearWorker.pid),false,"Clear left active tools running");
+  // Cancellation is scoped: leave another MCP client's queued command alone.
+  bridgePaused=true;
+  fs.writeFileSync(commandPath,JSON.stringify({id:"external-command",status:"pending",chatOwnerPid:host.pid+1}));
+  request("stop");
+  await waitFor(value=>value.statusText==="Stopped","idle Stop");
+  assert.equal(JSON.parse(fs.readFileSync(commandPath,"utf8")).status,"pending","Stop cancelled a command owned by another MCP client");
   console.log("Multi-CLI host integration passed.");
 } finally {
   clearInterval(fakeBridge);

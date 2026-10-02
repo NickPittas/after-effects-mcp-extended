@@ -55,6 +55,7 @@ $extensionId = "com.nickpittas.aftereffectsmcpextended"
 $extensionRoot = Join-Path $env:APPDATA "Adobe\CEP\extensions\$extensionId"
 New-Item -ItemType Directory -Path $extensionRoot -Force | Out-Null
 Copy-Item -Path (Join-Path $cepSource "*") -Destination $extensionRoot -Recurse -Force
+Copy-Item -LiteralPath $panelSource -Destination (Join-Path $extensionRoot "jsx\mcp-bridge-core.jsx") -Force
 
 $extensionBin = Join-Path $extensionRoot "bin"
 New-Item -ItemType Directory -Path $extensionBin -Force | Out-Null
@@ -89,7 +90,7 @@ if (-not (Test-Path -LiteralPath $installedManifest) -or -not (Test-Path -Litera
 
 Write-Host "After Effects MCP Extended installed successfully."
 Write-Host "Restart After Effects."
-Write-Host "Open Window > mcp-bridge-auto.jsx for the bridge."
-Write-Host "Open Window > Extensions > After Effects MCP Chat for the dockable chat."
+Write-Host "Open Window > Extensions > After Effects MCP Chat for the combined Chat and Bridge panel."
+Write-Host "The separate Window > mcp-bridge-auto.jsx panel is optional."
 Write-Host "The CEP panel starts its companion in the correct After Effects desktop context."
 Write-Host "The chat panel supports Codex, Claude Code, Antigravity CLI (AGY), Kimi CLI, Pi, and OpenCode."

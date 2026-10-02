@@ -1789,7 +1789,7 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.10.8",
+            version: "1.10.11",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             instanceId: bridgeInstanceId,
@@ -1981,111 +1981,71 @@ function getLayerInfo() {
 function createTextAnimator(args) {
     app.beginUndoGroup("Create Text Animator");
     try {
-        var comp = app.project.items[args.compIndex];
+        var comp = app.project.item(args.compIndex);
         if (!comp || !(comp instanceof CompItem)) {
             throw new Error("Composition not found at index " + args.compIndex);
         }
 
-        var layer = comp.layers[args.layerIndex];
+        var layer = comp.layer(args.layerIndex);
         if (!layer) {
             throw new Error("Layer not found at index " + args.layerIndex);
         }
 
-        var textProperties = layer.property("ADBE Text Properties");
-        if (!textProperties) {
-            throw new Error("Target layer is not a text layer.");
-        }
-
-        var animators = textProperties.property("ADBE Text Animators");
-        var animator = animators.addProperty("ADBE Text Animator");
-        animator.name = args.animatorName || "Text Animator";
-
-        var animatorProperties = animator.property("ADBE Text Animator Properties");
-        var propertyMatchNames = {
-            anchorPoint: "ADBE Text Anchor Point 3D",
-            position: "ADBE Text Position 3D",
-            scale: "ADBE Text Scale 3D",
-            rotation: "ADBE Text Rotation",
-            opacity: "ADBE Text Opacity",
-            skew: "ADBE Text Skew",
-            skewAxis: "ADBE Text Skew Axis",
-            tracking: "ADBE Text Tracking Amount",
-            fillColor: "ADBE Text Fill Color",
-            fillHue: "ADBE Text Fill Hue",
-            fillSaturation: "ADBE Text Fill Saturation",
-            fillBrightness: "ADBE Text Fill Brightness",
-            fillOpacity: "ADBE Text Fill Opacity",
-            strokeColor: "ADBE Text Stroke Color",
-            strokeHue: "ADBE Text Stroke Hue",
-            strokeSaturation: "ADBE Text Stroke Saturation",
-            strokeBrightness: "ADBE Text Stroke Brightness",
-            strokeOpacity: "ADBE Text Stroke Opacity",
-            strokeWidth: "ADBE Text Stroke Width",
-            blur: "ADBE Text Blur",
-            characterOffset: "ADBE Text Character Offset",
-            characterValue: "ADBE Text Character Value"
-        };
-        var addedProperties = [];
-        for (var p = 0; p < args.properties.length; p++) {
-            var definition = args.properties[p];
-            var matchName = definition.property === "raw" ? definition.matchName : propertyMatchNames[definition.property];
-            if (!matchName) throw new Error("Unsupported animator property: " + definition.property);
-            var animatorProperty = animatorProperties.addProperty(matchName);
-            if (!animatorProperty) throw new Error("After Effects could not add animator property " + matchName);
-            animatorProperty.setValue(definition.value);
-            addedProperties.push({ property: definition.property, matchName: matchName });
-        }
-
-        var selectors = animator.property("ADBE Text Selectors");
-        var selector = selectors.addProperty("ADBE Text Selector");
-        selector.name = "Range Selector";
-
-        var start = selector.property("ADBE Text Percent Start");
-        var end = selector.property("ADBE Text Percent End");
-        var offset = selector.property("ADBE Text Percent Offset");
         var selectorArgs = args.selector || {};
-        start.setValue(selectorArgs.start !== undefined ? selectorArgs.start : 0);
-        end.setValue(selectorArgs.end !== undefined ? selectorArgs.end : 100);
-        offset.setValue(selectorArgs.offset !== undefined ? selectorArgs.offset : 0);
-
-        var advanced = selector.property("ADBE Text Range Advanced");
-        if (advanced) {
-            var basedOn = advanced.property("ADBE Text Range Type2");
-            if (!basedOn) basedOn = advanced.property("ADBE Text Range Type 2");
-            var basedOnValues = {
-                characters: 1,
-                charactersExcludingSpaces: 2,
-                words: 3,
-                lines: 4
-            };
-            if (basedOn) basedOn.setValue(basedOnValues[selectorArgs.basedOn || "characters"]);
-
-            var smoothness = advanced.property("ADBE Text Selector Smoothness");
-            if (smoothness) smoothness.setValue(selectorArgs.smoothness !== undefined ? selectorArgs.smoothness : 0);
-            var easeHigh = advanced.property("ADBE Text Levels Max Ease");
-            if (easeHigh && selectorArgs.easeHigh !== undefined) easeHigh.setValue(selectorArgs.easeHigh);
-            var easeLow = advanced.property("ADBE Text Levels Min Ease");
-            if (easeLow && selectorArgs.easeLow !== undefined) easeLow.setValue(selectorArgs.easeLow);
-            var randomize = advanced.property("ADBE Text Randomize Order");
-            if (randomize && selectorArgs.randomizeOrder !== undefined) randomize.setValue(selectorArgs.randomizeOrder ? 1 : 0);
-        }
-
-        var animatedSelectorProperty = start;
-        if (selectorArgs.mode === "end") animatedSelectorProperty = end;
-        if (selectorArgs.mode === "offset") animatedSelectorProperty = offset;
         var startTime = (selectorArgs.startTimeInSeconds !== undefined) ? selectorArgs.startTimeInSeconds : 0;
         var durationFrames = selectorArgs.durationInFrames || 25;
         var endTime = startTime + (durationFrames / comp.frameRate);
-        animatedSelectorProperty.setValueAtTime(startTime, selectorArgs.from !== undefined ? selectorArgs.from : 0);
-        animatedSelectorProperty.setValueAtTime(endTime, selectorArgs.to !== undefined ? selectorArgs.to : 100);
+        var animatedField = selectorArgs.mode || "start";
+        if (animatedField !== "start" && animatedField !== "end" && animatedField !== "offset") {
+            throw new Error("selector.mode must be start, end, or offset.");
+        }
+        var selectorSettings = {
+            basedOn: selectorArgs.basedOn || "characters",
+            smoothness: selectorArgs.smoothness !== undefined ? selectorArgs.smoothness : 0,
+            start: selectorArgs.start !== undefined ? selectorArgs.start : 0,
+            end: selectorArgs.end !== undefined ? selectorArgs.end : 100,
+            offset: selectorArgs.offset !== undefined ? selectorArgs.offset : 0
+        };
+        if (selectorArgs.easeHigh !== undefined) selectorSettings.easeHigh = selectorArgs.easeHigh;
+        if (selectorArgs.easeLow !== undefined) selectorSettings.easeLow = selectorArgs.easeLow;
+        if (selectorArgs.randomizeOrder !== undefined) selectorSettings.randomizeOrder = selectorArgs.randomizeOrder;
+        selectorSettings[animatedField] = {
+            value: selectorSettings[animatedField],
+            keyframes: [
+                {time:startTime, value:selectorArgs.from !== undefined ? selectorArgs.from : 0},
+                {time:endTime, value:selectorArgs.to !== undefined ? selectorArgs.to : 100}
+            ]
+        };
+
+        // Keep this legacy tool on the same code path as text/animator. AE
+        // recreates indexed-group children after addProperty/remove(), so each
+        // subsequent property/selector must be looked up again from the layer.
+        var addedProperties = [];
+        if (Object.prototype.toString.call(args.properties) !== "[object Array]") {
+            throw new Error("properties must be an array.");
+        }
+        for (var p = 0; p < args.properties.length; p++) {
+            var definition = args.properties[p];
+            var matchName = definition && definition.property === "raw" ? definition.matchName :
+                (definition ? aeTextAnimatorPropertyNames()[definition.property] : null);
+            if (!matchName) throw new Error("Unsupported animator property: " + (definition && definition.property));
+            addedProperties.push({property:definition.property, matchName:matchName});
+        }
+
+        var report = aeTextAnimatorCommand(layer, {
+            animatorAction: "add",
+            animatorName: args.animatorName || "Text Animator",
+            properties: args.properties,
+            selectors: [{type:"range", name:"Range Selector", settings:selectorSettings}]
+        });
 
         return JSON.stringify({
             status: "success",
             message: "Text animator created successfully",
             layer: layer.name,
-            animator: animator.name,
+            animator: report.name,
             properties: addedProperties,
-            selectorMode: selectorArgs.mode || "start",
+            selectorMode: animatedField,
             startTime: startTime,
             endTime: endTime,
             durationFrames: durationFrames,
@@ -2533,7 +2493,7 @@ function aeInspect(args) {
     var scope = args.scope || "composition";
     if (scope === "capabilities") {
         return {
-            bridgeVersion: "1.10.8",
+            bridgeVersion: "1.10.11",
             command: "aeCommand",
             operations: {
                 inspect: ["get"],
@@ -2542,14 +2502,27 @@ function aeInspect(args) {
                 effect: ["get", "add", "update", "remove", "move"],
                 mask: ["get", "add", "set", "update", "remove"],
                 shape: ["get", "add", "set", "update", "remove", "move", "duplicate"],
-                text: ["get", "add", "set", "update"],
+                text: ["get", "add", "set", "update", "animator", "selector"],
                 layer: ["get", "add", "update", "replaceSource", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
                 composition: ["get", "create", "update", "duplicate", "remove"],
                 project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
                 render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
                 frame: ["copy", "capture"]
             },
+            textAnimators: {
+                actions: ["get", "add", "update", "remove"],
+                propertyAliases: aeTextAnimatorPropertyNames(),
+                selectorTypes: ["range", "wiggly", "expression"],
+                notes: "text/add creates a text layer only; for an existing layer use operation=text, action=animator, animatorAction=add with layerIndex or layerName. Do not pass animatorName, properties, or selectors to text/add. Use text/animator with animatorAction, or text/selector with selectorAction. Use animatorIndex/selectorIndex or unique names for targets. Arbitrary native properties accept matchName; selector settings accept propertyPath arrays. Values accept value, time, keyframes, expression, expressionEnabled, clearKeys. Keyframe time is seconds. Reports include propertyPath and keyframes; re-inspect after adding/removing groups. Native AE 3D/renderer restrictions still apply."
+            },
             examples: {
+                characterReveal: {
+                    operation: "text", action: "animator",
+                    parameters: {compName:"Text Demo", layerIndex:1, animatorAction:"add", animatorName:"Character Reveal",
+                        properties:[{property:"opacity",value:0}],
+                        selectors:[{type:"range",settings:{basedOn:"characters",smoothness:0,start:{keyframes:[{time:0,value:0},{time:1,value:100}]}}}]
+                    }
+                },
                 redVectorSquare: {
                     operation: "shape",
                     action: "add",
@@ -3180,9 +3153,268 @@ function aeApplyTextDocument(sourceText, args) {
     };
 }
 
+// Text animator groups are indexed: adding/removing children invalidates AE
+// references. Keep indices, then resolve from the layer again after each edit.
+function aeTextAnimatorPropertyNames() {
+    return {
+        anchorPoint: "ADBE Text Anchor Point 3D", position: "ADBE Text Position 3D", scale: "ADBE Text Scale 3D",
+        rotation: "ADBE Text Rotation", rotationX: "ADBE Text Rotation X", rotationY: "ADBE Text Rotation Y", rotationZ: "ADBE Text Rotation",
+        opacity: "ADBE Text Opacity", skew: "ADBE Text Skew", skewAxis: "ADBE Text Skew Axis",
+        tracking: "ADBE Text Tracking Amount", trackingType: "ADBE Text Track Type", lineAnchor: "ADBE Text Line Anchor", lineSpacing: "ADBE Text Line Spacing",
+        fillColor: "ADBE Text Fill Color", fillHue: "ADBE Text Fill Hue", fillSaturation: "ADBE Text Fill Saturation",
+        fillBrightness: "ADBE Text Fill Brightness", fillOpacity: "ADBE Text Fill Opacity",
+        strokeColor: "ADBE Text Stroke Color", strokeHue: "ADBE Text Stroke Hue", strokeSaturation: "ADBE Text Stroke Saturation",
+        strokeBrightness: "ADBE Text Stroke Brightness", strokeOpacity: "ADBE Text Stroke Opacity", strokeWidth: "ADBE Text Stroke Width",
+        blur: "ADBE Text Blur", characterOffset: "ADBE Text Character Offset", characterValue: "ADBE Text Character Replace"
+    };
+}
+
+function aeTextAnimatorRoot(layer) {
+    aeTextSourceProperty(layer);
+    return layer.property("ADBE Text Properties").property("ADBE Text Animators");
+}
+
+function aeTextIndexedTarget(group, index, name, label) {
+    if (index !== undefined && name !== undefined) throw new Error("Use either " + label + "Index or " + label + "Name, not both.");
+    if (index !== undefined) {
+        if (typeof index !== "number" || index !== Math.floor(index) || index < 1 || index > group.numProperties) throw new Error("Invalid " + label + "Index.");
+        return group.property(index);
+    }
+    if (typeof name !== "string" || !name) throw new Error("Pass " + label + "Index or a unique " + label + "Name.");
+    var target = null;
+    for (var i = 1; i <= group.numProperties; i++) {
+        var candidate = group.property(i);
+        if (candidate.name !== name) continue;
+        if (target) throw new Error("Ambiguous " + label + "Name: " + name + ". Use an index.");
+        target = candidate;
+    }
+    if (!target) throw new Error(label + " not found: " + name);
+    return target;
+}
+
+function aeTextAnimatorAt(layer, index) { return aeTextAnimatorRoot(layer).property(index); }
+function aeTextSelectorAt(layer, animatorIndex, selectorIndex) {
+    return aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Selectors").property(selectorIndex);
+}
+
+function aeTextPropertyReport(property, path) {
+    var report = aeSerializeProperty(property, 0, 0, true);
+    report.propertyPath = path;
+    if (property.propertyType === PropertyType.PROPERTY) report.keyframes = aeSerializeKeyframes(property);
+    if (property.numProperties) {
+        report.properties = [];
+        for (var i = 1; i <= property.numProperties; i++) report.properties.push(aeTextPropertyReport(property.property(i), path.concat([i])));
+    }
+    return report;
+}
+
+function aeTextValueSpec(value) {
+    return value && typeof value === "object" && Object.prototype.toString.call(value) !== "[object Array]" ? value : { value: value };
+}
+
+function aeTextValidateValueSpec(spec) {
+    if (spec.time !== undefined && (typeof spec.time !== "number" || !isFinite(spec.time))) throw new Error("Property time must be finite seconds.");
+    if (spec.expression !== undefined && typeof spec.expression !== "string") throw new Error("Expression must be a string.");
+    if (spec.keyframes !== undefined) {
+        if (Object.prototype.toString.call(spec.keyframes) !== "[object Array]") throw new Error("keyframes must be an array.");
+        for (var i = 0; i < spec.keyframes.length; i++) {
+            var key = spec.keyframes[i];
+            if (!key || typeof key.time !== "number" || !isFinite(key.time) || key.value === undefined) throw new Error("Each keyframe needs finite time in seconds and a value.");
+        }
+    }
+}
+
+function aeTextApplyValueSpec(property, spec) {
+    aeTextValidateValueSpec(spec);
+    if (spec.clearKeys === true) while (property.numKeys > 0) property.removeKey(property.numKeys);
+    if (spec.value !== undefined) {
+        var value = aeCoercePropertyValue(property, spec.value);
+        if (spec.time !== undefined) property.setValueAtTime(spec.time, value); else property.setValue(value);
+    }
+    if (spec.keyframes) {
+        for (var i = 0; i < spec.keyframes.length; i++) {
+            var key = spec.keyframes[i];
+            property.setValueAtTime(key.time, aeCoercePropertyValue(property, key.value));
+            aeApplyKeyframeOptions(property, property.nearestKeyIndex(key.time), key);
+        }
+    }
+    if (spec.expression !== undefined) {
+        if (!property.canSetExpression) throw new Error("Property cannot accept expressions: " + property.matchName);
+        property.expression = spec.expression;
+        if (property.expressionError) throw new Error("Expression error: " + property.expressionError);
+    }
+    if (spec.expressionEnabled !== undefined) property.expressionEnabled = spec.expressionEnabled;
+}
+
+function aeTextAnimatorPropertyMatch(spec) {
+    var matchName = spec.matchName || aeTextAnimatorPropertyNames()[spec.property];
+    if (!matchName || typeof matchName !== "string") throw new Error("Unknown animator property. Use a supported property alias or native matchName.");
+    return matchName;
+}
+
+function aeTextEditAnimatorProperties(layer, animatorIndex, specs) {
+    if (Object.prototype.toString.call(specs) !== "[object Array]") throw new Error("Animator properties must be an array.");
+    for (var v = 0; v < specs.length; v++) {
+        aeTextAnimatorPropertyMatch(specs[v]);
+        aeTextValidateValueSpec(specs[v]);
+    }
+    for (var i = 0; i < specs.length; i++) {
+        var spec = specs[i];
+        var matchName = aeTextAnimatorPropertyMatch(spec);
+        var group = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Animator Properties");
+        var property = group.property(matchName);
+        if (spec.remove === true) {
+            if (!property) throw new Error("Animator property not found: " + matchName);
+            property.remove();
+            continue;
+        }
+        if (!property) {
+            if (!group.canAddProperty(matchName)) throw new Error("AE cannot add animator property " + matchName + " on this layer (check native 3D/renderer requirements).");
+            var propertyIndex = group.addProperty(matchName).propertyIndex;
+            group = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Animator Properties");
+            property = group.property(propertyIndex);
+        }
+        aeTextApplyValueSpec(property, spec);
+    }
+}
+
+function aeTextSelectorMatch(spec) {
+    var types = { range: "ADBE Text Selector", wiggly: "ADBE Text Wiggly Selector", expression: "ADBE Text Expressible Selector" };
+    var matchName = spec.matchName || types[spec.type || "range"];
+    if (!matchName) throw new Error("Selector type must be range, wiggly, expression, or pass matchName.");
+    return matchName;
+}
+
+function aeTextSelectorSettingPath(selector, name) {
+    if (selector.matchName === "ADBE Text Selector") {
+        var advanced = "ADBE Text Range Advanced";
+        var names = { units: "ADBE Text Range Units", basedOn: "ADBE Text Range Type2", mode: "ADBE Text Selector Mode",
+            amount: "ADBE Text Selector Max Amount", shape: "ADBE Text Range Shape", smoothness: "ADBE Text Selector Smoothness",
+            easeHigh: "ADBE Text Levels Max Ease", easeLow: "ADBE Text Levels Min Ease", randomizeOrder: "ADBE Text Randomize Order", randomSeed: "ADBE Text Random Seed" };
+        if (names[name]) {
+            if (name === "basedOn" && !selector.property(advanced).property(names[name])) return [advanced, "ADBE Text Range Type 2"];
+            return [advanced, names[name]];
+        }
+        if (name === "start" || name === "end" || name === "offset") {
+            var units = selector.property(advanced).property("ADBE Text Range Units").value;
+            return ["ADBE Text " + (units === 2 ? "Index " : "Percent ") + name.charAt(0).toUpperCase() + name.slice(1)];
+        }
+    }
+    if (selector.matchName === "ADBE Text Expressible Selector" && name === "amount") return ["ADBE Text Expressible Amount"];
+    return [name]; // Raw match names support every setting exposed by AE.
+}
+
+function aeTextEditSelectorSettings(layer, animatorIndex, selectorIndex, settings) {
+    if (!settings) return;
+    var specs = [];
+    if (Object.prototype.toString.call(settings) === "[object Array]") specs = settings;
+    else {
+        // Units first: switching to index units changes Start/End/Offset paths.
+        if (settings.hasOwnProperty("units")) specs.push({ property: "units", data: settings.units });
+        for (var name in settings) if (settings.hasOwnProperty(name) && name !== "units") specs.push({ property: name, data: settings[name] });
+    }
+    for (var i = 0; i < specs.length; i++) {
+        var selector = aeTextSelectorAt(layer, animatorIndex, selectorIndex);
+        var spec = specs[i].data !== undefined ? aeTextValueSpec(specs[i].data) : specs[i];
+        var path = specs[i].propertyPath || aeTextSelectorSettingPath(selector, specs[i].property);
+        // Friendly enum values are optional; raw native numbers still work.
+        if (typeof spec.value === "string" && (specs[i].property === "basedOn" || specs[i].property === "units")) {
+            var enums = specs[i].property === "basedOn" ? {characters:1, charactersExcludingSpaces:2, words:3, lines:4} : {percentage:1, index:2};
+            if (enums[spec.value] === undefined) throw new Error("Unsupported " + specs[i].property + ": " + spec.value);
+            spec = aeMergeObjects(spec, {value:enums[spec.value]});
+        }
+        if (specs[i].property === "randomizeOrder" && typeof spec.value === "boolean") spec = aeMergeObjects(spec, {value:spec.value ? 1 : 0});
+        aeTextApplyValueSpec(aeResolveProperty(selector, path), spec);
+    }
+}
+
+function aeTextAddSelector(layer, animatorIndex, spec) {
+    var group = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Selectors");
+    var matchName = aeTextSelectorMatch(spec);
+    if (!group.canAddProperty(matchName)) throw new Error("AE cannot add selector: " + matchName);
+    var selectorIndex = group.addProperty(matchName).propertyIndex;
+    try {
+        var selector = aeTextSelectorAt(layer, animatorIndex, selectorIndex);
+        if (spec.name || spec.selectorName) selector.name = spec.name || spec.selectorName;
+        aeTextEditSelectorSettings(layer, animatorIndex, selectorIndex, spec.settings);
+        return selectorIndex;
+    } catch (error) {
+        aeTextSelectorAt(layer, animatorIndex, selectorIndex).remove();
+        throw error;
+    }
+}
+
+function aeTextAnimatorCommand(layer, args) {
+    var group = aeTextAnimatorRoot(layer);
+    var verb = args.animatorAction || "get";
+    if (verb === "get" && args.animatorIndex === undefined && args.animatorName === undefined) return aeTextPropertyReport(group, ["ADBE Text Properties", "ADBE Text Animators"]);
+    var animatorIndex;
+    if (verb === "add") {
+        if (args.properties !== undefined && Object.prototype.toString.call(args.properties) !== "[object Array]") throw new Error("properties must be an array.");
+        if (args.selectors !== undefined && Object.prototype.toString.call(args.selectors) !== "[object Array]") throw new Error("selectors must be an array.");
+        animatorIndex = group.addProperty("ADBE Text Animator").propertyIndex;
+        try {
+            if (args.animatorName || args.name) aeTextAnimatorAt(layer, animatorIndex).name = args.animatorName || args.name;
+            if (args.properties) aeTextEditAnimatorProperties(layer, animatorIndex, args.properties);
+            var selectors = args.selectors === undefined ? [{type:"range"}] : args.selectors;
+            // Some AE versions add a range selector automatically. Replace only
+            // the selectors on this newly-created animator, not existing ones.
+            var selectorGroup = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Selectors");
+            while (selectorGroup.numProperties) {
+                selectorGroup.property(selectorGroup.numProperties).remove();
+                selectorGroup = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Selectors");
+            }
+            for (var i = 0; i < selectors.length; i++) aeTextAddSelector(layer, animatorIndex, selectors[i]);
+        } catch (error) {
+            aeTextAnimatorAt(layer, animatorIndex).remove();
+            throw error;
+        }
+    } else {
+        var animator = aeTextIndexedTarget(group, args.animatorIndex, args.animatorName, "animator");
+        animatorIndex = animator.propertyIndex;
+        if (verb === "remove") { animator.remove(); return {removedIndex:animatorIndex}; }
+        if (verb === "update") {
+            if (args.newName !== undefined) animator.name = args.newName;
+            if (args.enabled !== undefined) animator.enabled = args.enabled;
+            if (args.properties) aeTextEditAnimatorProperties(layer, animatorIndex, args.properties);
+        } else if (verb !== "get") throw new Error("animatorAction must be get, add, update, or remove.");
+    }
+    return aeTextPropertyReport(aeTextAnimatorAt(layer, animatorIndex), ["ADBE Text Properties", "ADBE Text Animators", animatorIndex]);
+}
+
+function aeTextSelectorCommand(layer, args) {
+    var animatorIndex = aeTextIndexedTarget(aeTextAnimatorRoot(layer), args.animatorIndex, args.animatorName, "animator").propertyIndex;
+    var group = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Selectors");
+    var verb = args.selectorAction || "get";
+    var path = ["ADBE Text Properties", "ADBE Text Animators", animatorIndex, "ADBE Text Selectors"];
+    if (verb === "get" && args.selectorIndex === undefined && args.selectorName === undefined) return aeTextPropertyReport(group, path);
+    var selectorIndex;
+    if (verb === "add") selectorIndex = aeTextAddSelector(layer, animatorIndex, args);
+    else {
+        var selector = aeTextIndexedTarget(group, args.selectorIndex, args.selectorName, "selector");
+        selectorIndex = selector.propertyIndex;
+        if (verb === "remove") { selector.remove(); return {removedIndex:selectorIndex, animatorIndex:animatorIndex}; }
+        if (verb === "update") {
+            if (args.type !== undefined || args.matchName !== undefined) throw new Error("To change selector type, add a new selector and remove the old one.");
+            if (args.newName !== undefined) selector.name = args.newName;
+            if (args.enabled !== undefined) selector.enabled = args.enabled;
+            aeTextEditSelectorSettings(layer, animatorIndex, selectorIndex, args.settings);
+        } else if (verb !== "get") throw new Error("selectorAction must be get, add, update, or remove.");
+    }
+    return aeTextPropertyReport(aeTextSelectorAt(layer, animatorIndex, selectorIndex), path.concat([selectorIndex]));
+}
+
 function aeTextCommand(args) {
     var comp = aeGetComposition(args);
+    if (args.action === "animator" || args.action === "selector") {
+        var animatorLayer = aeGetLayer(comp, args);
+        return args.action === "animator" ? aeTextAnimatorCommand(animatorLayer, args) : aeTextSelectorCommand(animatorLayer, args);
+    }
     if (args.action === "add") {
+        if (args.animatorAction !== undefined || args.selectorAction !== undefined || args.animatorName !== undefined ||
+            args.selectorName !== undefined || args.selectors !== undefined || args.properties !== undefined) {
+            throw new Error("text action add creates a text layer only. To add an animator to an existing text layer, use action=animator, animatorAction=add, and layerIndex or layerName.");
+        }
         var created = args.boxSize ? comp.layers.addBoxText(args.boxSize) : comp.layers.addText(args.text || "");
         created.name = args.name || "Text Layer";
         if (args.position) {
@@ -4805,7 +5037,8 @@ function logToPanel(message) {
 }
 
 // Check for new commands
-function checkForCommands(acceptedInstanceId) {
+function checkForCommands(acceptedInstanceId, expectedCommandId) {
+    var outcome = { ok: false, error: "Command file was not available: " + getCommandFilePath() };
     // AE executes ExtendScript on one thread. If a later tick observes this
     // flag, the previous evaluation was interrupted and cannot still be active.
     if (isChecking) {
@@ -4814,14 +5047,14 @@ function checkForCommands(acceptedInstanceId) {
     }
     bridgeLastTickAt = (new Date()).getTime();
     writeBridgeHeartbeat(autoRunCheckbox.value ? "ready" : "paused");
-    if (!autoRunCheckbox.value) return;
+    if (!autoRunCheckbox.value) return { ok: false, error: "Bridge Auto-run is disabled." };
     
     isChecking = true;
     
     try {
         var commandFile = new File(getCommandFilePath());
         if (commandFile.exists) {
-            commandFile.open("r");
+            if (!commandFile.open("r")) throw new Error("Unable to read command file: " + commandFile.fsName);
             var content = commandFile.read();
             commandFile.close();
             
@@ -4830,10 +5063,14 @@ function checkForCommands(acceptedInstanceId) {
                     ? JSON.parse(content)
                     : eval("(" + content + ")");
                 var commandOwner = acceptedInstanceId || bridgeInstanceId;
+                if (expectedCommandId && commandData.id !== expectedCommandId) {
+                    isChecking = false;
+                    return { ok: false, error: "The pending command was replaced before execution." };
+                }
                 if (commandData.bridgeInstanceId && commandData.bridgeInstanceId !== commandOwner) {
                     isChecking = false;
                     writeBridgeHeartbeat("ready");
-                    return;
+                    return { ok: false, error: "Command belongs to a different bridge instance." };
                 }
                 
                 // Only execute pending commands
@@ -4845,14 +5082,27 @@ function checkForCommands(acceptedInstanceId) {
                     // Execute the command
                     executeCommand(commandData.command, commandData.args || {}, commandData.id);
                 }
+                // Read the result back. A swallowed checker/file error must
+                // never masquerade as a successful host evaluation.
+                var acknowledgementFile = new File(getResultFilePath());
+                if (acknowledgementFile.exists && acknowledgementFile.open("r")) {
+                    var acknowledgementText = acknowledgementFile.read();
+                    acknowledgementFile.close();
+                    var acknowledgement = JSON.parse(acknowledgementText);
+                    if (acknowledgement._commandId === commandData.id && acknowledgement.status !== "waiting") {
+                        outcome = { ok: true, commandId: commandData.id, resultStatus: acknowledgement.status };
+                    } else outcome.error = "No completed result for command " + commandData.id;
+                } else outcome.error = "Unable to read command result: " + getResultFilePath();
             }
         }
     } catch (e) {
         logToPanel("Error checking for commands: " + e.toString());
+        outcome.error = e.toString();
     }
     
     isChecking = false;
     writeBridgeHeartbeat("ready");
+    return outcome;
 }
 
 function recoverInterruptedBridgeCommand() {
@@ -5013,6 +5263,12 @@ function startCommandChecker() {
         logToPanel("Unable to start bridge timer: " + error.toString());
         writeBridgeHeartbeat("error");
     }
+}
+
+if (aeMcpHeadlessBridgeMode) {
+    // Keep functions and their lexical state alive even when evalFile was
+    // invoked inside a CEP helper. No UI objects or scheduled tasks are needed.
+    $.global.__aeMcpHeadlessCore = { headless: true, check: checkForCommands, recover: recoverInterruptedBridgeCommand };
 }
 
 if (!aeMcpHeadlessBridgeMode) {
