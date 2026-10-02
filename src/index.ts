@@ -11,7 +11,7 @@ import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE } from "./ae-har
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.10.5"
+  version: "1.10.8"
 }, {
   instructions: AE_HARNESS_SYSTEM_PROMPT
 });
@@ -39,6 +39,35 @@ function getAETempDir(): string {
     fs.mkdirSync(bridgeDir, { recursive: true });
   }
   return bridgeDir;
+}
+
+function sleepSynchronous(milliseconds: number): void {
+  const deadline = Date.now() + milliseconds;
+  while (Date.now() < deadline) {}
+}
+
+function writeJsonFileAtomic(filePath: string, value: unknown): void {
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  fs.writeFileSync(temporaryPath, JSON.stringify(value, null, 2), "utf8");
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    try {
+      fs.renameSync(temporaryPath, filePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      try { fs.unlinkSync(filePath); } catch {}
+      try {
+        fs.renameSync(temporaryPath, filePath);
+        return;
+      } catch (retryError) {
+        lastError = retryError;
+      }
+      sleepSynchronous(10);
+    }
+  }
+  try { fs.unlinkSync(temporaryPath); } catch {}
+  throw lastError instanceof Error ? lastError : new Error(`Unable to atomically write ${filePath}`);
 }
 
 // Headless CLI execution has been removed. All interactions are routed through the Bridge panel.
@@ -138,7 +167,7 @@ function writeCommandFile(command: string, args: Record<string, any> = {}, comma
       timestamp: new Date().toISOString(),
       status: "pending"  // pending, running, completed, error
     };
-    fs.writeFileSync(commandFile, JSON.stringify(commandData, null, 2));
+    writeJsonFileAtomic(commandFile, commandData);
     console.error(`Command "${command}" written to ${commandFile}`);
     return commandData.id;
   } catch (error) {
@@ -160,7 +189,7 @@ function clearResultsFile(commandId?: string): void {
       timestamp: new Date().toISOString()
     };
     
-    fs.writeFileSync(resultFile, JSON.stringify(resetData, null, 2));
+    writeJsonFileAtomic(resultFile, resetData);
     console.error(`Results file cleared at ${resultFile}`);
   } catch (error) {
     console.error("Error clearing results file:", error);
@@ -1056,7 +1085,7 @@ const afterEffectsOperationActions: Record<string, readonly string[]> = {
   mask: ["get", "add", "set", "update", "remove"],
   shape: ["get", "add", "set", "update", "remove", "move", "duplicate"],
   text: ["get", "add", "set", "update"],
-  layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
+  layer: ["get", "add", "update", "replaceSource", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
   composition: ["get", "create", "update", "duplicate", "remove"],
   project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
   render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
@@ -1096,9 +1125,15 @@ server.tool(
       if (!allowedActions.includes(action)) {
         throw new Error(`Unsupported action '${action}' for operation '${operation}'. Valid actions: ${allowedActions.join(", ")}.`);
       }
-      const timeoutMs = operation === "render" && action === "render"
-        ? Number(parameters.timeoutMs || 3600000)
-        : 15000;
+      const requestedTimeout = Number(parameters.timeoutMs);
+      const defaultTimeout = operation === "render" && action === "render"
+        ? 3600000
+        : operation === "inspect"
+          ? 60000
+          : operation === "layer" && action === "replaceSource" && Array.isArray(parameters.replacements)
+            ? 120000
+            : 30000;
+      const timeoutMs = Math.min(3600000, Math.max(1000, Number.isFinite(requestedTimeout) ? requestedTimeout : defaultTimeout));
       assertBridgeAvailable();
       releaseBridge = await acquireBridgeLock(timeoutMs + 15000);
       const commandId = createBridgeCommandId();

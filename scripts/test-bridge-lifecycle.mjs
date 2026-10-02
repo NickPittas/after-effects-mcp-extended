@@ -15,6 +15,7 @@ FakeFolder.startup = new FakeFolder("C:/AfterEffects");
 class FakeFile {
   constructor(filePath) {
     this.fsName = String(filePath).replace(/\\/g, "/");
+    this.name = this.fsName.split("/").pop();
     this.mode = "";
     this.buffer = "";
     this.encoding = "UTF-8";
@@ -29,6 +30,17 @@ class FakeFile {
   read() { return String(files.get(this.fsName) || ""); }
   write(value) { this.buffer += String(value); return true; }
   close() { if (this.mode === "w" || this.mode === "a") files.set(this.fsName, this.buffer); return true; }
+  remove() { return files.delete(this.fsName); }
+  rename(newName) {
+    if (!files.has(this.fsName)) return false;
+    const targetPath = this.fsName.split("/").slice(0, -1).concat(String(newName)).join("/");
+    const value = files.get(this.fsName);
+    files.delete(this.fsName);
+    files.set(targetPath, value);
+    this.fsName = targetPath;
+    this.name = String(newName);
+    return true;
+  }
 }
 
 const scheduled = new Map();

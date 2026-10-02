@@ -59,12 +59,55 @@ const [provider, ...args] = process.argv.slice(2);
 const requireArg = (value) => { if (!args.includes(value)) throw new Error(provider + " missing required argument " + value + ": " + JSON.stringify(args)); };
 if (args.includes("--version")) { console.log(provider + " 99.0.0"); process.exit(0); }
 if (args.includes("--help")) {
-  console.log(provider === "kimi" ? "--prompt --output-format --continue" : "help");
+  const help = provider === "kimi" ? "--prompt --output-format --continue --model"
+    : provider === "opencode" && args[0] !== "run" ? "opencode commands: run, models"
+    : "--model --effort (low|medium|high|max) --thinking level: off, minimal, low, medium, high, xhigh";
+  if (provider === "agy") console.error(help); else console.log(help);
+  process.exit(0);
+}
+if (args[0] === "models") {
+  console.log(provider === "opencode" ? 'fixture-provider/fixture-model' : 'fixture-model\tFixture Model');
+  process.exit(0);
+}
+if (args.includes("--list-models")) {
+  console.log('provider model context max-out thinking images');
+  console.log('fixture-provider fixture-model 200K 30K yes yes');
+  process.exit(0);
+}
+if (provider === "kimi" && args[0] === "provider") {
+  console.log(JSON.stringify({models:{"fixture-model":{}}}));
   process.exit(0);
 }
 if (provider === "claude" && args[0] === "auth") { console.log('{"loggedIn":true,"email":"claude@test"}'); process.exit(0); }
 if (provider === "opencode" && args[0] === "auth") { console.log("anthropic api - 1 credentials"); process.exit(0); }
 if (args[0] === "mcp") { console.log("AfterEffectsMCP ready"); process.exit(0); }
+if (provider === "codex" && args[0] === "login") { console.log("Logged in"); process.exit(0); }
+if (provider === "codex" && args[0] === "app-server") {
+  const readline = await import("node:readline");
+  readline.createInterface({input:process.stdin}).on("line", line => {
+    const request = JSON.parse(line);
+    if (!request.id) return;
+    let result = {};
+    if (request.method === "account/read") result = {account:{type:"chatgpt",email:"fixture@test",planType:"plus"}};
+    if (request.method === "thread/start" || request.method === "thread/resume") result = {thread:{id:"codex-session"}};
+    if (request.method === "model/list") result = {data:[{id:"fixture-model",model:"fixture-model",displayName:"Fixture",supportedReasoningEfforts:[{reasoningEffort:"low"},{reasoningEffort:"high"}],defaultReasoningEffort:"low"},{id:"fixture-default",model:"fixture-default",isDefault:true,supportedReasoningEfforts:[{reasoningEffort:"low"},{reasoningEffort:"high"}],defaultReasoningEffort:"low"}]};
+    if (request.method === "config/read") result = {config:{model:"fixture-default",model_reasoning_effort:"low"}};
+    if (request.method === "turn/start") {
+      fs.appendFileSync(path.join(process.env.USERPROFILE,"codex-turns.jsonl"),JSON.stringify(request.params)+"\\n");
+      result = {turn:{id:"codex-turn"}};
+      console.log(JSON.stringify({method:"turn/started",params:{turn:result.turn}}));
+      setTimeout(() => {
+        console.log(JSON.stringify({method:"item/agentMessage/delta",params:{itemId:"fixture-message",delta:"Codex response"}}));
+        console.log(JSON.stringify({method:"turn/completed",params:{turn:{id:"codex-turn",status:"completed"}}}));
+      },40);
+    }
+    console.log(JSON.stringify({id:request.id,result}));
+  });
+} else {
+if (args.includes("--model")) {
+  const selected = args[args.indexOf("--model") + 1];
+  if (selected !== (provider === "opencode" ? "fixture-provider/fixture-model" : "fixture-model")) throw new Error("Incorrect selected model for " + provider);
+}
 const aePrompt = fs.readFileSync(path.join(process.cwd(), "after-effects-system-prompt.md"), "utf8");
 if (!aePrompt.includes("You are embedded in Adobe After Effects") || !aePrompt.includes("shape/add")) throw new Error("Shared After Effects system prompt is incomplete");
 for (const instructionFile of ["AGENTS.md", "CLAUDE.md", "GEMINI.md"]) {
@@ -119,10 +162,11 @@ if (provider === "claude") {
   console.log(JSON.stringify({type:"text",sessionID:"opencode-session",part:{text:"OpenCode response"}}));
   }
 }
+}
 `, "utf8");
 
 const nodePath = process.execPath;
-for (const provider of ["claude", "agy", "kimi", "pi", "opencode"]) {
+for (const provider of ["codex", "claude", "agy", "kimi", "pi", "opencode"]) {
   fs.writeFileSync(path.join(fakeBin, provider), "#!/bin/sh\nexit 99\n", "utf8");
   fs.writeFileSync(path.join(fakeBin, provider + ".cmd"), `@echo off\r\n"${nodePath}" "${fakeRunner}" ${provider} %*\r\n`, "utf8");
 }
@@ -130,8 +174,11 @@ for (const provider of ["claude", "agy", "kimi", "pi", "opencode"]) {
 // Exercise the in-place provider migration from the removed Gemini adapter.
 fs.writeFileSync(path.join(chatDir, "settings.json"), JSON.stringify({ version: "1.10.2", provider: "gemini", noApprovalPrompts: true, trustAfterEffectsMcp: true }));
 
+const isolatedEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => ![
+  "userprofile", "home", "appdata", "localappdata", "homedrive", "homepath", "path"
+].includes(key.toLowerCase())));
 const env = {
-  ...process.env,
+  ...isolatedEnv,
   USERPROFILE: fakeHome,
   HOME: fakeHome,
   APPDATA: fakeAppData,
@@ -139,6 +186,12 @@ const env = {
   HOMEDRIVE: path.parse(fakeHome).root.replace(/\\$/, ""),
   HOMEPATH: fakeHome.slice(path.parse(fakeHome).root.length - 1),
   PATH: fakeBin + path.delimiter + process.env.PATH,
+  AE_MCP_CLAUDE_EXECUTABLE: path.join(fakeBin, "claude.cmd"),
+  AE_MCP_CODEX_EXECUTABLE: path.join(fakeBin, "codex.cmd"),
+  AE_MCP_AGY_EXECUTABLE: path.join(fakeBin, "agy.cmd"),
+  AE_MCP_KIMI_EXECUTABLE: path.join(fakeBin, "kimi.cmd"),
+  AE_MCP_PI_EXECUTABLE: path.join(fakeBin, "pi.cmd"),
+  AE_MCP_OPENCODE_EXECUTABLE: path.join(fakeBin, "opencode.cmd"),
 };
 const host = spawn(nodePath, [path.resolve("build", "chat-host.js")], { cwd: process.cwd(), env, stdio: ["ignore", "pipe", "pipe"] });
 let hostError = "";
@@ -163,14 +216,24 @@ function request(action, data = {}) {
 
 try {
   await waitFor((value) => value.hostStatus === "ready" && value.provider === "agy", "host startup and Gemini-to-AGY migration");
-  const expected = { claude: "Claude response", agy: "AGY response", kimi: "Kimi response", pi: "Pi response", opencode: "OpenCode response" };
+  const expected = { codex: "Codex response", claude: "Claude response", agy: "AGY response", kimi: "Kimi response", pi: "Pi response", opencode: "OpenCode response" };
   for (const provider of Object.keys(expected)) {
     request("selectProvider", { providerId: provider });
     const selected = await waitFor((value) => value.provider === provider && value.cliStatus === "ready" && !value.busy, provider + " selection");
     assert.match(selected.cliPath, /\.(cmd|exe)$/i, `Windows selected a non-executable shim for ${provider}: ${selected.cliPath}`);
+    await waitFor(value => value.modelCatalogs?.[provider]?.status === "ready", provider + " catalog");
+    const modelChoice = {model:"fixture-model",provider:provider === "pi" || provider === "opencode" ? "fixture-provider" : null,effort:provider === "codex" || provider === "agy" || provider === "pi" ? "high" : null};
+    request("setModel", { providerId: provider, modelChoice });
+    const savedModel = await waitFor(value => JSON.stringify(value.modelChoices?.[provider]) === JSON.stringify(modelChoice), provider + " saved model");
+    assert.equal(JSON.parse(fs.readFileSync(path.join(chatDir, "settings.json"), "utf8")).modelChoices[provider].model, "fixture-model");
     request("send", { prompt: "Test " + provider, context: { fixture: true } });
     const result = await waitFor((value) => !value.busy && value.transcript?.some((entry) => entry.providerLabel && entry.text === expected[provider]), provider + " response");
     assert(result.transcript.some((entry) => entry.providerLabel && entry.text === expected[provider]));
+    if (provider === "codex") {
+      const turn = JSON.parse(fs.readFileSync(path.join(fakeHome,"codex-turns.jsonl"),"utf8").trim());
+      assert.equal(turn.model,"fixture-model");
+      assert.equal(turn.effort,"high");
+    }
     if (provider === "agy") {
       const aeTool = result.activityLog.find((entry) => entry.label === "After Effects");
       assert(aeTool && aeTool.status === "completed", "AGY MCP activity was not identified as After Effects");
@@ -183,10 +246,21 @@ try {
       assert(firstText.sequence < tool.sequence && tool.sequence < secondText.sequence, "Pi timeline order is not text, tool, text");
     }
   }
+  try { fs.unlinkSync(commandPath); } catch {}
   request("send", { prompt: "STOP_FIXTURE" });
   await waitFor((value) => value.provider === "opencode" && value.busy, "long-running OpenCode fixture");
+  assert.equal(fs.existsSync(commandPath), false, "A normal chat send must not run a hidden blocking AE inspection");
+  request("selectProvider", { providerId: "opencode" });
+  await new Promise((resolve) => setTimeout(resolve, 250));
+  const duplicateSelection = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert(!String(duplicateSelection.error || "").includes("switching CLI tools"), "Re-selecting the active provider must be a no-op while busy");
   request("stop");
   await waitFor((value) => !value.busy && value.statusText === "Stopped", "process-tree stop");
+  request("setModel", {providerId:"opencode",modelChoice:{model:null,provider:null,effort:null}});
+  await waitFor(value => value.modelChoices?.opencode?.model === null, "return to CLI default");
+  const settings = JSON.parse(fs.readFileSync(path.join(chatDir, "settings.json"), "utf8"));
+  assert.equal(settings.providerSessions.opencode, undefined, "CLI default must clear a session with a sticky model override");
+  assert.equal(settings.modelChoices.pi.model, "fixture-model", "Changing one harness must preserve the other model choices");
   console.log("Multi-CLI host integration passed.");
 } finally {
   clearInterval(fakeBridge);

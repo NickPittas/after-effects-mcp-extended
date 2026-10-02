@@ -129,53 +129,53 @@ function runScenario(initialHeartbeat, processResult = "success", commandStatus 
   };
 }
 
-const fresh = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() });
+const fresh = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() });
 assert(!fresh.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP raced a healthy ScriptUI bridge");
 
-const startupCooldown = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "pending", null, true);
+const startupCooldown = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "pending", null, true);
 assert.equal(startupCooldown.getInitializeCallCount(), 0, "CEP evaluated host code during the AE startup cooldown");
 startupCooldown.advance(4001);
 startupCooldown.watchdog.callback();
 assert.equal(startupCooldown.getInitializeCallCount(), 1);
 assert.equal(startupCooldown.getProcessCallCount(), 1);
 
-const stale = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 5000 });
+const stale = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 5000 });
 assert(stale.hostCalls.includes("aeMcpChatInitializeBridgeCore()"));
 assert(stale.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0));
 assert.equal(JSON.parse(stale.files.get(commandPath)).status, "completed");
 assert.match(JSON.parse(stale.files.get(commandPath)).bridgeInstanceId, /^cep-/);
 assert.match(JSON.parse(stale.files.get(heartbeatPath)).instanceId, /^cep-/);
 
-const closed = runScenario({ version: "1.10.5", state: "closed", autoRun: false, instanceId: "scriptui", updatedAt: Date.now() - 5000 });
+const closed = runScenario({ version: "1.10.7", state: "closed", autoRun: false, instanceId: "scriptui", updatedAt: Date.now() - 5000 });
 assert(!closed.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP restarted an intentionally closed bridge");
-closed.files.set(heartbeatPath, JSON.stringify({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui-reopened", updatedAt: closed.currentTime() }));
+closed.files.set(heartbeatPath, JSON.stringify({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui-reopened", updatedAt: closed.currentTime() }));
 closed.watchdog.callback();
-closed.files.set(heartbeatPath, JSON.stringify({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui-reopened", updatedAt: closed.currentTime() - 6000 }));
+closed.files.set(heartbeatPath, JSON.stringify({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui-reopened", updatedAt: closed.currentTime() - 6000 }));
 closed.watchdog.callback();
 assert(closed.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP did not recover after the bridge panel reopened and later became stale");
 
-const paused = runScenario({ version: "1.10.5", state: "paused", autoRun: false, instanceId: "scriptui", updatedAt: Date.now() - 6000 });
+const paused = runScenario({ version: "1.10.7", state: "paused", autoRun: false, instanceId: "scriptui", updatedAt: Date.now() - 6000 });
 assert(!paused.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP ignored the Auto-run pause state");
 
-const idleStale = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "completed");
+const idleStale = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "completed");
 assert(!idleStale.hostCalls.includes("aeMcpChatInitializeBridgeCore()"), "CEP evaluated host code without a pending command");
 
-const relinquish = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "completed");
-relinquish.files.set(heartbeatPath, JSON.stringify({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui-recovered", updatedAt: relinquish.currentTime() }));
+const relinquish = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "success", "completed");
+relinquish.files.set(heartbeatPath, JSON.stringify({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui-recovered", updatedAt: relinquish.currentTime() }));
 relinquish.files.set(commandPath, JSON.stringify({ command: "aeCommand", id: "second-command", args: {}, status: "pending" }));
 relinquish.watchdog.callback();
 assert(!relinquish.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP did not relinquish control to a recovered ScriptUI bridge");
 
-const interrupted = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 5000 }, "error");
+const interrupted = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 5000 }, "error");
 const retried = JSON.parse(interrupted.files.get(commandPath));
 assert.equal(retried.status, "pending");
 assert.equal(retried.retryCount, 1);
 assert.match(retried.lastHostError, /EvalScript error/);
 
-const otherInstance = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "source-a", updatedAt: Date.now() - 6000 }, "success", "pending", "source-b");
+const otherInstance = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "source-a", updatedAt: Date.now() - 6000 }, "success", "pending", "source-b");
 assert(!otherInstance.hostCalls.some((call) => call.indexOf("aeMcpChatProcessBridgeCommand(") === 0), "CEP stole a command owned by another AE instance");
 
-const callbackLost = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "lost-callback-once");
+const callbackLost = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "lost-callback-once");
 assert.equal(callbackLost.getProcessCallCount(), 1, "first host command was not started");
 const takeoverHeartbeat = JSON.parse(callbackLost.files.get(heartbeatPath));
 callbackLost.files.set(commandPath, JSON.stringify({ command: "aeCommand", id: "after-lost-callback", args: {}, status: "pending", bridgeInstanceId: takeoverHeartbeat.instanceId }));
@@ -183,7 +183,7 @@ callbackLost.watchdog.callback();
 assert.equal(callbackLost.getProcessCallCount(), 2, "lost CEP callback permanently wedged later bridge commands");
 assert.equal(JSON.parse(callbackLost.files.get(commandPath)).status, "completed");
 
-const initializationLost = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "init-lost-once");
+const initializationLost = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "init-lost-once");
 assert.equal(initializationLost.getInitializeCallCount(), 1);
 assert.equal(initializationLost.getProcessCallCount(), 0);
 initializationLost.advance(3501);
@@ -195,7 +195,7 @@ assert.equal(initializationLost.getInitializeCallCount(), 2, "lost initializatio
 assert.equal(initializationLost.getProcessCallCount(), 1);
 assert.equal(JSON.parse(initializationLost.files.get(commandPath)).status, "completed");
 
-const runningLost = runScenario({ version: "1.10.5", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "running-no-callback");
+const runningLost = runScenario({ version: "1.10.7", state: "ready", autoRun: true, instanceId: "scriptui", updatedAt: Date.now() - 6000 }, "running-no-callback");
 runningLost.advance(7001);
 runningLost.watchdog.callback();
 assert.equal(JSON.parse(runningLost.files.get(commandPath)).status, "error", "interrupted running command remained wedged");

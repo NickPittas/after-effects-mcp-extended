@@ -2,6 +2,7 @@ import { spawn, spawnSync, type ChildProcess, type SpawnOptions, type SpawnSyncO
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { ModelChoice } from "./cli-models.js";
 
 export type CliProviderId = "codex" | "claude" | "agy" | "kimi" | "pi" | "opencode";
 
@@ -221,6 +222,11 @@ export function spawnCliSync(
 
 export function findProviderExecutable(id: CliProviderId): string | null {
   const definition = PROVIDERS[id];
+  const configuredExecutable = process.env[`AE_MCP_${id.toUpperCase()}_EXECUTABLE`];
+  if (configuredExecutable && fs.existsSync(configuredExecutable)) {
+    const configuredProbe = spawnCliSync(configuredExecutable, definition.versionArgs, { timeout: 10000 });
+    if (configuredProbe.status === 0) return configuredExecutable;
+  }
   const candidates: string[] = [];
   for (const executableName of definition.executableNames) {
     const found = spawnSync("where.exe", [executableName], { encoding: "utf8", windowsHide: true, timeout: 5000 });
@@ -229,6 +235,18 @@ export function findProviderExecutable(id: CliProviderId): string | null {
     }
   }
   candidates.push(...definition.knownPaths);
+  if (id === "codex") {
+    // The desktop app installs its CLI in a versioned bin subdirectory. AE
+    // retains the PATH from its launch, which can still point at an older
+    // standalone install after the desktop app updates.
+    for (const binRoot of [path.join(localAppData, "OpenAI", "Codex", "bin"), path.join(localAppData, "Programs", "OpenAI", "Codex", "bin")]) {
+      try {
+        for (const entry of fs.readdirSync(binRoot, { withFileTypes: true })) {
+          if (entry.isDirectory()) candidates.push(path.join(binRoot, entry.name, "codex.exe"));
+        }
+      } catch {}
+    }
+  }
   const unique = candidates.filter((candidate, index) => {
     if (!candidate || !fs.existsSync(candidate)) return false;
     if (process.platform === "win32" && !/\.(exe|com|cmd|bat)$/i.test(candidate)) return false;
@@ -240,11 +258,27 @@ export function findProviderExecutable(id: CliProviderId): string | null {
       return rank(left) - rank(right);
     });
   }
+  let newestCodex: { path: string; version: string } | null = null;
   for (const candidate of unique) {
     const probe = spawnCliSync(candidate, definition.versionArgs, { timeout: 10000 });
-    if (probe.status === 0) return candidate;
+    if (probe.status !== 0) continue;
+    if (id !== "codex") return candidate;
+    const version = String(probe.stdout || probe.stderr || "");
+    if (!newestCodex || compareCliVersions(version, newestCodex.version) > 0) newestCodex = { path: candidate, version };
   }
-  return null;
+  return newestCodex?.path || null;
+}
+
+export function compareCliVersions(left: string, right: string): number {
+  const parse = (value: string) => {
+    const match = value.match(/\b(\d+)\.(\d+)\.(\d+)(-[\w.-]+)?/);
+    return { parts: match ? match.slice(1, 4).map(Number) : [0, 0, 0], prerelease: match?.[4] || "" };
+  };
+  const a = parse(left), b = parse(right);
+  for (let index = 0; index < 3; index++) if (a.parts[index] !== b.parts[index]) return a.parts[index] - b.parts[index];
+  if (!a.prerelease && b.prerelease) return 1;
+  if (a.prerelease && !b.prerelease) return -1;
+  return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true });
 }
 
 function directoryHasFiles(directory: string): boolean {
@@ -437,17 +471,21 @@ export function buildProviderRunSpec(input: {
   piExtensionPath: string;
   piSessionDir: string;
   kimiFlavor?: KimiCliFlavor;
+  modelChoice?: ModelChoice;
 }): ProviderRunSpec {
   const commonEnv = { ...process.env, AE_MCP_EXECUTABLE: input.mcpExecutable };
+  const choice = input.modelChoice;
+  const modelArgs = choice?.model ? ["--model", input.provider === "opencode" && choice.provider ? `${choice.provider}/${choice.model}` : choice.model] : [];
+  const effortArgs = choice?.effort ? [input.provider === "pi" ? "--thinking" : input.provider === "opencode" ? "--variant" : "--effort", choice.effort] : [];
   if (input.provider === "claude") {
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--mcp-config", input.mcpConfigPath, "--append-system-prompt-file", input.systemPromptPath];
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--mcp-config", input.mcpConfigPath, "--append-system-prompt-file", input.systemPromptPath, ...modelArgs, ...effortArgs];
     if (input.autoApprove) args.push("--dangerously-skip-permissions");
     if (input.sessionId) args.push("--resume", input.sessionId);
     args.push("--add-dir", path.dirname(input.promptFile));
     return { args, env: commonEnv, stdinText: input.promptText };
   }
   if (input.provider === "agy") {
-    const args = ["--output-format", "stream-json"];
+    const args = ["--output-format", "stream-json", ...modelArgs, ...effortArgs];
     if (input.autoApprove) args.push("--dangerously-skip-permissions");
     if (input.sessionId) args.push("--conversation", input.sessionId);
     args.push("-p", input.promptText);
@@ -455,17 +493,18 @@ export function buildProviderRunSpec(input: {
   }
   if (input.provider === "kimi") {
     if (input.kimiFlavor === "kimi-code") {
-      const args = ["--output-format", "stream-json"];
+      const args = ["--output-format", "stream-json", ...modelArgs];
       if (input.sessionId) args.push("--continue");
       args.push("--prompt", input.promptText);
       return { args, env: commonEnv };
     }
-    const args = ["--print", "--output-format=stream-json", "--mcp-config-file", input.mcpConfigPath];
+    const args = ["--print", "--output-format=stream-json", "--mcp-config-file", input.mcpConfigPath, ...modelArgs];
     if (input.sessionId) args.push("--continue");
     return { args, env: commonEnv, stdinText: input.promptText };
   }
   if (input.provider === "pi") {
-    const args = ["--print", "--mode", "json", "--session-dir", input.piSessionDir, "--extension", input.piExtensionPath, "--append-system-prompt", input.systemPromptPath];
+    const args = ["--print", "--mode", "json", "--session-dir", input.piSessionDir, "--extension", input.piExtensionPath, "--append-system-prompt", input.systemPromptPath, ...modelArgs, ...effortArgs];
+    if (choice?.model && choice.provider) args.push("--provider", choice.provider);
     if (input.sessionId) args.push("--continue");
     args.push(`@${input.promptFile}`);
     for (const attachmentPath of input.attachmentPaths) args.push(`@${attachmentPath}`);
@@ -473,7 +512,7 @@ export function buildProviderRunSpec(input: {
     return { args, env: commonEnv };
   }
   if (input.provider === "opencode") {
-    const args = ["run", "--format", "json"];
+    const args = ["run", "--format", "json", ...modelArgs, ...effortArgs];
     if (input.autoApprove) args.push("--auto");
     if (input.sessionId) args.push("--session", input.sessionId);
     for (const attachmentPath of input.attachmentPaths) args.push("--file", attachmentPath);

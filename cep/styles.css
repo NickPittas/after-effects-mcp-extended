@@ -85,6 +85,16 @@ button { color: inherit; }
 .provider-select:hover, .provider-select:focus { border-color: #6750a1; }
 .provider-select:disabled { opacity: .6; cursor: default; }
 .provider-select option { background: #242424; color: var(--text); }
+.model-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 0 10px 7px; }
+.model-row label { color: var(--muted); font-size: 11px; }
+.model-row select, .custom-model-row input { min-width: 0; height: 27px; border: 1px solid var(--border-strong); border-radius: 5px; background: #242424; color: var(--text); font: inherit; padding: 3px 6px; }
+#modelSelect { flex: 1 1 140px; max-width: 100%; }
+#modelEffortSelect { flex: 0 1 126px; }
+.model-row select:disabled { opacity: .55; }
+.model-refresh { padding: 3px 6px; font-size: 17px; }
+.custom-model-row { display: flex; gap: 6px; padding: 0 10px 7px; }
+.custom-model-row[hidden], #modelEffortSelect[hidden] { display: none; }
+.custom-model-row input { flex: 1; }
 .connection-line { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: 0 0 auto; }
 .status-dot.ready { background: var(--green); box-shadow: 0 0 0 2px rgba(75, 212, 123, .12); }
@@ -150,7 +160,7 @@ button { color: inherit; }
 .secondary-button { width: 100%; margin-top: 8px; border-color: var(--border-strong); background: #202020; color: var(--text); }
 .secondary-button:hover { background: #343434; }
 .secondary-button.quiet { margin-top: 2px; color: var(--muted); background: transparent; }
-.options-popover { top: 80px; padding: 5px; }
+.options-popover { top: 100%; padding: 5px; }
 
 .toggle-row {
   min-height: 48px;

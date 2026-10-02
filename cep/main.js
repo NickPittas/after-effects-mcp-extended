@@ -32,6 +32,9 @@
   var lastCepHeartbeatWrite = 0;
   var bridgeRetryAfter = 0;
   var localSending = false;
+  var modelDraft = false;
+  var modelChangePending = null;
+  var lastModelRender = "";
   var expandedToolGroups = {};
 
   var elements = {
@@ -45,6 +48,12 @@
     optionsPopover: document.getElementById("optionsPopover"),
     accountButton: document.getElementById("accountButton"),
     providerSelect: document.getElementById("providerSelect"),
+    modelSelect: document.getElementById("modelSelect"),
+    modelEffortSelect: document.getElementById("modelEffortSelect"),
+    refreshModelsButton: document.getElementById("refreshModelsButton"),
+    customModelRow: document.getElementById("customModelRow"),
+    customModelInput: document.getElementById("customModelInput"),
+    applyModelButton: document.getElementById("applyModelButton"),
     accountPopover: document.getElementById("accountPopover"),
     accountProvider: document.getElementById("accountProvider"),
     accountInitials: document.getElementById("accountInitials"),
@@ -172,7 +181,7 @@
     if (Date.now() - lastCepHeartbeatWrite < 700) return;
     lastCepHeartbeatWrite = Date.now();
     var heartbeat = {
-      version: "1.10.5",
+      version: "1.10.8",
       state: stateName || (bridgeHostBusy ? "checking" : "ready"),
       autoRun: !bridgeStoppedByPanel,
       instanceId: bridgeInstanceId,
@@ -634,7 +643,7 @@
     elements.statusDot.className = "status-dot " + (error ? "error" : busy ? "busy" : state.cliStatus === "ready" ? "ready" : "");
     var providerName = state.providerName || "CLI assistant";
     elements.statusText.textContent = state.statusText || "CLI Chat";
-    elements.sendButton.disabled = state.cliStatus !== "ready" || state.bridgeStatus !== "ready" || busy || localSending;
+    elements.sendButton.disabled = state.cliStatus !== "ready" || state.bridgeStatus !== "ready" || busy || localSending || Boolean(modelChangePending);
     elements.stopButton.disabled = !busy;
     elements.stopButton.title = "Stop " + providerName;
     elements.providerSelect.value = state.provider || "codex";
@@ -653,6 +662,66 @@
     elements.installProviderButton.textContent = "Install " + providerName;
     elements.promptInput.placeholder = "Ask " + providerName + " to work in After Effects…";
     elements.emptyCopy.textContent = "Ask " + providerName + " to create, inspect, animate, or render.";
+    renderModels();
+  }
+
+  function modelKey(choice) {
+    return JSON.stringify([choice.provider || "", choice.model || ""]);
+  }
+
+  function escapeHtml(value) {
+    return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function renderModels() {
+    var choice = (state.modelChoices || {})[state.provider] || { model: null, provider: null, effort: null };
+    var catalog = (state.modelCatalogs || {})[state.provider] || { models: [], efforts: [] };
+    if (modelChangePending && JSON.stringify(choice) === JSON.stringify(modelChangePending)) modelChangePending = null;
+    var signature = JSON.stringify([state.provider, catalog, choice, modelDraft]);
+    if (signature !== lastModelRender) {
+      lastModelRender = signature;
+      var options = '<option value="">CLI default</option>';
+      var matched = null;
+      (catalog.models || []).forEach(function (model) {
+        var key = modelKey({ model: model.id, provider: model.provider });
+        options += '<option value="' + escapeHtml(key) + '">' + escapeHtml(model.label || model.id) + '</option>';
+        if (key === modelKey(choice)) matched = model;
+      });
+      if (choice.model && !matched) options += '<option value="' + escapeHtml(modelKey(choice)) + '">' + escapeHtml((choice.provider ? choice.provider + ' / ' : '') + choice.model) + ' (saved)</option>';
+      options += '<option value="__custom__">Custom model…</option>';
+      elements.modelSelect.innerHTML = options;
+      elements.modelSelect.value = modelDraft ? '__custom__' : choice.model ? modelKey(choice) : '';
+      elements.customModelInput.placeholder = state.provider === 'pi' || state.provider === 'opencode' ? 'provider/model-id' : 'Model ID or CLI alias';
+      var defaultModel = (catalog.models || []).filter(function (model) { return model.id === catalog.defaultModel; })[0];
+      var efforts = (matched || (!choice.model && defaultModel) || {}).efforts || catalog.efforts || [];
+      elements.modelEffortSelect.hidden = efforts.length === 0;
+      elements.modelEffortSelect.innerHTML = '<option value="">Default reasoning</option>' + efforts.map(function (level) { return '<option value="' + escapeHtml(level) + '">' + escapeHtml(level) + '</option>'; }).join('');
+      elements.modelEffortSelect.value = choice.effort || '';
+    }
+    elements.customModelRow.hidden = !modelDraft;
+    var disabled = state.busy || Boolean(modelChangePending) || catalog.modelSupported === false || state.cliStatus !== 'ready';
+    elements.modelSelect.disabled = disabled;
+    elements.modelEffortSelect.disabled = disabled || catalog.status === 'loading';
+    elements.customModelInput.disabled = disabled;
+    elements.applyModelButton.disabled = disabled;
+    elements.refreshModelsButton.disabled = catalog.status === 'loading' || state.cliStatus !== 'ready';
+    elements.refreshModelsButton.textContent = catalog.status === 'loading' ? '…' : '↻';
+    elements.modelSelect.title = catalog.status === 'loading' ? 'Loading available models…' : (catalog.message || 'Model choice is remembered separately for each CLI');
+  }
+
+  function saveModelChoice(choice) {
+    modelDraft = false;
+    modelChangePending = choice;
+    queueRequest('setModel', { providerId: state.provider, modelChoice: choice });
+    renderHeader();
+    setTimeout(function () {
+      if (modelChangePending === choice) {
+        modelChangePending = null;
+        lastModelRender = '';
+        renderHeader();
+        showToast((state && state.error) || 'Model setting was not confirmed. Refresh status and try again.', true);
+      }
+    }, 15000);
   }
 
   function renderActivity() {
@@ -778,9 +847,42 @@
     elements.accountPopover.hidden = true;
   });
   elements.providerSelect.addEventListener("change", function () {
+    modelDraft = false;
+    modelChangePending = null;
     queueRequest("selectProvider", { providerId: elements.providerSelect.value });
     elements.providerSelect.disabled = true;
   });
+  elements.modelSelect.addEventListener('change', function () {
+    if (!state) return;
+    if (elements.modelSelect.value === '__custom__') {
+      modelDraft = true;
+      elements.customModelRow.hidden = false;
+      elements.customModelInput.focus();
+      return;
+    }
+    var pair = elements.modelSelect.value ? JSON.parse(elements.modelSelect.value) : ['', ''];
+    saveModelChoice({ model: pair[1] || null, provider: pair[0] || null, effort: null });
+  });
+  elements.applyModelButton.addEventListener('click', function () {
+    var id = elements.customModelInput.value.trim();
+    if (!id) return;
+    var provider = null;
+    if (state.provider === 'pi' || state.provider === 'opencode') {
+      var separator = id.indexOf('/');
+      if (separator < 1 || separator === id.length - 1) { showToast('Enter provider/model-id.', true); return; }
+      provider = id.slice(0, separator);
+      id = id.slice(separator + 1);
+    }
+    saveModelChoice({ model: id, provider: provider, effort: null });
+  });
+  elements.customModelInput.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') { event.preventDefault(); elements.applyModelButton.click(); }
+  });
+  elements.modelEffortSelect.addEventListener('change', function () {
+    var choice = (state.modelChoices || {})[state.provider] || {};
+    saveModelChoice({ model: choice.model || null, provider: choice.provider || null, effort: elements.modelEffortSelect.value || null });
+  });
+  elements.refreshModelsButton.addEventListener('click', function () { queueRequest('refreshModels', {}); });
   elements.installProviderButton.addEventListener("click", function () {
     queueRequest("installProvider", {});
     elements.accountPopover.hidden = true;

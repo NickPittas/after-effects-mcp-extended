@@ -11,6 +11,7 @@ Extended capabilities include:
 - Shape groups, primitives, paths, fills, strokes, and vector modifiers
 - Point and box text with character, paragraph, range styling, and Source Text animation
 - Track mattes, blending modes, precomposing, and explicit time-remap animation
+- In-place single or atomic bulk layer-source replacement using existing Project-panel footage or compositions
 - Batch imports, render-queue management, multiple outputs, AME dispatch, and reusable render/output templates
 - Media inventory, relinking, reloading, interpretation, file/sequence/placeholder/solid proxies, dependency traversal, and missing-media reports
 - Dependency manifests plus explicitly confirmed consolidation, unused-footage removal, and project reduction
@@ -21,6 +22,7 @@ Extended capabilities include:
 - Improved bridge response tracking and direct rendered-frame image returns
 - Dockable, resizable ScriptUI bridge panel
 - Dockable CEP/HTML multi-CLI chat panel for Codex, Claude Code, Antigravity CLI (AGY), Kimi CLI, Pi, and OpenCode, with per-provider sessions, chronologically segmented streamed conversations, timestamped expandable tool groups, account/setup controls, viewer/UI screenshots, Stop, and autonomous mode
+- Per-harness model selection, live model catalogs where supported, custom model IDs, and advertised reasoning controls
 - Shared After Effects system instructions for every CLI harness, with the live operation matrix, parameter guidance, native-object rules, and verification behavior
 - Standalone Windows MCP and chat executables; release users do not need Node.js or npm
 
@@ -69,6 +71,7 @@ Extended capabilities include:
 - **Create solid/adjustment layers** for backgrounds and effects
 - **Create camera layers** with configurable zoom and position
 - **Place existing footage or compositions** into a composition by project item index, ID, or name
+- **Replace a layer source in place** from an existing Project-panel item while preserving the layer's effects, masks, transforms, timing, switches, and time-remap data
 - **Create null objects** for animation control
 - **Modify layer properties** like position, scale, rotation, opacity, timing
 - **Toggle 2D/3D mode** for layers
@@ -117,6 +120,8 @@ their official npm packages when Node.js/npm is available; otherwise the panel
 opens that provider's official installation instructions. Sign-in is launched
 only when the user presses **Sign in**. Each provider keeps its own conversation
 session.
+
+Use the **Model** row below the CLI selector to choose a model. Each CLI remembers its own choice. The refresh button reloads the available catalog; **Custom model…** accepts an exact model ID or configured alias. Pi and OpenCode use `provider/model-id`. A reasoning selector appears only when the catalog advertises reasoning choices. Model changes apply to the next message and are disabled during a running turn. Returning an override to **CLI default** starts a fresh harness session so a resumed conversation cannot retain the previous override; the visible chat history remains available. Claude offers its stable CLI aliases and custom IDs because its CLI does not expose the same model-list command as the other harnesses.
 
 Codex uses its native app-server integration. Claude Code, Antigravity CLI,
 Kimi CLI, and OpenCode receive the bundled AfterEffectsMCP server through their

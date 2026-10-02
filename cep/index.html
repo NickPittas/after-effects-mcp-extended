@@ -27,6 +27,16 @@
           <span id="accountInitials">?</span>
         </button>
       </div>
+      <div class="model-row">
+        <label for="modelSelect">Model</label>
+        <select id="modelSelect" aria-label="Choose model"><option value="">CLI default</option></select>
+        <select id="modelEffortSelect" aria-label="Reasoning level" title="Reasoning level" hidden><option value="">Default reasoning</option></select>
+        <button class="toolbar-button model-refresh" id="refreshModelsButton" type="button" title="Refresh available models" aria-label="Refresh available models">↻</button>
+      </div>
+      <div class="custom-model-row" id="customModelRow" hidden>
+        <input id="customModelInput" type="text" placeholder="Model ID" aria-label="Custom model ID" maxlength="200">
+        <button class="toolbar-button" id="applyModelButton" type="button">Apply</button>
+      </div>
       <div class="toolbar-row">
         <button class="toolbar-button" id="toolsToggle" type="button" aria-pressed="false">
           <span>Tools</span><b class="count-badge" id="toolsCount">0</b>

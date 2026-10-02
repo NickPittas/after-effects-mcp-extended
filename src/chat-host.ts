@@ -18,6 +18,7 @@ import {
   type ProviderSnapshot,
 } from "./cli-providers.js";
 import { AE_HARNESS_SYSTEM_PROMPT } from "./ae-harness-prompt.js";
+import { DEFAULT_MODEL_CHOICE, discoverCliModels, normalizeModelChoice, validateModelChoice, type ModelChoice, type ModelCatalog } from "./cli-models.js";
 
 type TranscriptRole = "user" | "assistant" | "system";
 
@@ -57,6 +58,8 @@ type ChatState = {
   provider: CliProviderId;
   providerName: string;
   providers: ProviderSnapshot[];
+  modelChoices: Partial<Record<CliProviderId, ModelChoice>>;
+  modelCatalogs: Partial<Record<CliProviderId, ModelCatalog>>;
   hostStatus: "starting" | "ready" | "error";
   cliStatus: "checking" | "missing" | "signedOut" | "ready" | "installing";
   cliPath: string | null;
@@ -84,6 +87,7 @@ type ChatRequest = {
   action?: string;
   prompt?: string;
   context?: Record<string, unknown>;
+  contextError?: string | null;
   viewerPath?: string;
   viewerRequested?: boolean;
   viewerError?: string | null;
@@ -92,9 +96,10 @@ type ChatRequest = {
   noApprovalPrompts?: boolean;
   decision?: "accept" | "acceptForSession" | "decline" | "cancel";
   providerId?: CliProviderId;
+  modelChoice?: ModelChoice;
 };
 
-const VERSION = "1.10.5";
+const VERSION = "1.10.8";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -123,6 +128,8 @@ let state: ChatState = {
   provider: "codex",
   providerName: PROVIDERS.codex.label,
   providers: [],
+  modelChoices: {},
+  modelCatalogs: {},
   hostStatus: "starting",
   cliStatus: "checking",
   cliPath: null,
@@ -177,24 +184,43 @@ function logHostError(context: string, error: unknown): void {
   } catch {}
 }
 
+function sleepSynchronous(milliseconds: number): void {
+  const deadline = Date.now() + milliseconds;
+  while (Date.now() < deadline) {}
+}
+
 function writeJsonAtomic(filePath: string, value: unknown): void {
-  const temporaryPath = `${filePath}.${process.pid}.tmp`;
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
   const serialized = JSON.stringify(value, null, 2);
-  try {
-    fs.writeFileSync(temporaryPath, serialized, "utf8");
-    fs.renameSync(temporaryPath, filePath);
-  } catch {
-    // CEP reads state.json very frequently. On Windows that can briefly prevent
-    // rename-overwrite even though a normal write is permitted. A direct-write
-    // fallback is preferable to terminating the long-running companion.
+  fs.writeFileSync(temporaryPath, serialized, "utf8");
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    try {
+      fs.renameSync(temporaryPath, filePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      try { fs.unlinkSync(filePath); } catch {}
+      try {
+        fs.renameSync(temporaryPath, filePath);
+        return;
+      } catch (retryError) {
+        lastError = retryError;
+      }
+      sleepSynchronous(10);
+    }
+  }
+  try { fs.unlinkSync(temporaryPath); } catch {}
+  if (filePath !== AE_COMMAND_PATH && filePath !== AE_RESULT_PATH) {
     try {
       fs.writeFileSync(filePath, serialized, "utf8");
+      return;
     } catch (fallbackError) {
-      logHostError(`Unable to write ${path.basename(filePath)}`, fallbackError);
+      lastError = fallbackError;
     }
-    try { fs.unlinkSync(temporaryPath); } catch {}
-    // The fallback is expected occasionally while CEP is reading the file.
   }
+  logHostError(`Unable to atomically write ${path.basename(filePath)}`, lastError);
+  throw lastError instanceof Error ? lastError : new Error(`Unable to atomically write ${filePath}`);
 }
 
 function saveState(): void {
@@ -294,6 +320,7 @@ type ChatSettings = {
   threadId?: string;
   provider?: CliProviderId;
   providerSessions?: Partial<Record<CliProviderId, string>>;
+  modelChoices?: Partial<Record<CliProviderId, ModelChoice>>;
   trustAfterEffectsMcp?: boolean;
   noApprovalPrompts?: boolean;
 };
@@ -312,12 +339,16 @@ function saveSettings(): void {
     threadId: state.threadId,
     provider: state.provider,
     providerSessions,
+    modelChoices: state.modelChoices,
     trustAfterEffectsMcp: state.trustAfterEffectsMcp,
     noApprovalPrompts: state.noApprovalPrompts,
   });
 }
 
 const savedSettings = loadSettings();
+for (const provider of PROVIDER_ORDER) {
+  try { state.modelChoices[provider] = normalizeModelChoice(savedSettings.modelChoices?.[provider]); } catch { state.modelChoices[provider] = { ...DEFAULT_MODEL_CHOICE }; }
+}
 // A prompt/tool-contract update must start fresh harness sessions. Several CLIs
 // freeze their system prompt when a session is created, so resuming an older
 // session would preserve obsolete After Effects instructions.
@@ -404,7 +435,7 @@ async function acquireAeBridgeLock(timeoutMs: number): Promise<() => void> {
   throw new Error("Another After Effects command is still running. Wait for it to finish and try again.");
 }
 
-async function runAeBridgeCommand(operation: string, action: string, parameters: Record<string, unknown> = {}, timeoutMs = 15000): Promise<any> {
+async function runAeBridgeCommand(operation: string, action: string, parameters: Record<string, unknown> = {}, timeoutMs = 60000): Promise<any> {
   const initialHealth = readBridgeHeartbeat();
   if (initialHealth.status !== "ready") throw new Error(`${initialHealth.message} Keep the MCP Bridge panel open with Auto-run enabled.`);
   const release = await acquireAeBridgeLock(timeoutMs + 5000);
@@ -445,8 +476,9 @@ async function runAeBridgeCommand(operation: string, action: string, parameters:
 
 async function prepareAfterEffectsRequest(request: ChatRequest): Promise<ChatRequest> {
   const prepared: ChatRequest = { ...request };
-  const project = await runAeBridgeCommand("inspect", "get", { scope: "project", maxItems: 100 });
-  prepared.context = project.data || project;
+  // The CLI already has the After Effects MCP and can inspect the project when
+  // the request needs it. A mandatory hidden inspection here used to block
+  // every chat message while AE was busy or changing projects.
   if (request.viewerRequested) {
     try {
       const capture = await runAeBridgeCommand("frame", "capture", {}, 20000);
@@ -771,18 +803,51 @@ class AppServerClient {
     saveState();
   }
 
+  async refreshModels(): Promise<ModelCatalog> {
+    await this.start();
+    const models: ModelCatalog["models"] = [];
+    let cursor: string | null = null;
+    let defaultModel: string | undefined;
+    do {
+      const result = await this.request("model/list", { limit: 100, includeHidden: false, cursor }, 15000);
+      for (const item of result.data || []) {
+        if (item.hidden) continue;
+        const id = item.model || item.id;
+        if (!id) continue;
+        const efforts = (item.supportedReasoningEfforts || []).map((level: any) => typeof level === "string" ? level : level.reasoningEffort).filter(Boolean);
+        models.push({ id, label: item.displayName || id, efforts, defaultEffort: item.defaultReasoningEffort });
+        if (item.isDefault) defaultModel = id;
+      }
+      cursor = result.nextCursor || null;
+    } while (cursor && models.length < 500);
+    let defaultEffort: string | undefined;
+    try {
+      const config = await this.request("config/read", { includeLayers: false }, 10000);
+      defaultModel = config.config?.model || defaultModel;
+      defaultEffort = config.config?.model_reasoning_effort || undefined;
+    } catch { /* Older app-server versions do not expose config/read. */ }
+    return { status: "ready", modelSupported: true, models, efforts: [], defaultModel, defaultEffort };
+  }
+
   async sendTurn(request: ChatRequest): Promise<void> {
     await this.start();
+    if (!state.threadId) await this.ensureThread();
     if (state.cliStatus !== "ready" || !state.account) throw new Error("Sign in to Codex before starting chat.");
     if (state.busy) throw new Error("Codex is already working. Stop the current turn or wait for it to finish.");
 
     const prompt = (request.prompt || "").trim();
     if (!prompt) throw new Error("Enter a message first.");
+    const choice = state.modelChoices.codex || DEFAULT_MODEL_CHOICE;
+    const catalog = state.modelCatalogs.codex;
+    validateModelChoice(catalog, choice);
 
     const input: Array<Record<string, unknown>> = [];
     const attachments: Array<{ kind: "viewer" | "aeUi"; label: string; path: string }> = [];
     const contextText = request.context ? `\n\nAfter Effects context:\n${JSON.stringify(request.context, null, 2)}` : "";
-    input.push({ type: "text", text: `${prompt}${contextText}` });
+    const contextNotice = request.contextError
+      ? `\n\nAfter Effects context status: ${request.contextError} Continue with the request and inspect After Effects through the MCP when needed.`
+      : "";
+    input.push({ type: "text", text: `${prompt}${contextText}${contextNotice}` });
     let viewerAttached = false;
     if (request.viewerPath) {
       const viewerPath = normalizeAttachmentPath(request.viewerPath);
@@ -821,12 +886,26 @@ class AppServerClient {
     state.error = null;
     saveState();
 
-    const result = await this.request("turn/start", {
+    const model = choice.model || catalog?.defaultModel;
+    const selectedModel = catalog?.models.find(item => item.id === model);
+    const configuredEffort = choice.effort || (!choice.model ? catalog?.defaultEffort : undefined) || selectedModel?.defaultEffort;
+    const effort = selectedModel && configuredEffort && !selectedModel.efforts?.includes(configuredEffort) ? selectedModel.defaultEffort : configuredEffort;
+    let result: any;
+    try { result = await this.request("turn/start", {
       threadId: state.threadId,
       input,
       approvalPolicy: state.noApprovalPrompts ? "never" : "on-request",
-    });
-    state.activeTurnId = result.turn.id;
+      ...(model ? { model } : {}),
+      ...(effort ? { effort } : {}),
+    }); } catch (error) {
+      state.busy = false;
+      state.activeTurnId = null;
+      state.approval = null;
+      saveState();
+      if (/timed out/.test(String(error))) this.forceStopAndRestart("Codex did not confirm the new turn.");
+      throw error;
+    }
+    if (state.busy) state.activeTurnId = result.turn.id;
     saveState();
   }
 
@@ -870,6 +949,7 @@ class AppServerClient {
     state.approval = null;
     state.statusText = "Stopped";
     state.activity = { kind: "idle", label: "Stopped" };
+    state.error = null;
     saveState();
     setTimeout(() => {
       void this.start().then(() => {
@@ -1047,7 +1127,7 @@ class AppServerClient {
       const status = params.turn?.status || "completed";
       state.statusText = status === "completed" ? "Ready" : `Turn ${status}`;
       state.activity = { kind: status === "completed" ? "idle" : "error", label: status === "completed" ? "Ready" : `Turn ${status}` };
-      if (params.turn?.error?.message) state.error = params.turn.error.message;
+      state.error = params.turn?.error?.message || null;
       this.assistantEntry = null;
     } else if (message.method === "serverRequest/resolved") {
       state.approval = null;
@@ -1476,11 +1556,14 @@ class GenericCliClient {
       } else notices.push("The After Effects UI screenshot was unavailable or minimized.");
     }
     const contextText = request.context ? `\n\nAfter Effects context:\n${JSON.stringify(request.context, null, 2)}` : "";
+    const contextNotice = request.contextError
+      ? `\n\nAfter Effects context status: ${request.contextError} Continue with the request and inspect After Effects through the MCP when needed.`
+      : "";
     const noticeText = notices.length ? `\n\nAttachment status:\n${notices.join("\n")} Do not claim to see an image that was not attached.` : "";
     const attachmentText = attachmentPaths.length
       ? `\n\nAttached images (inspect these files as part of the request):\n${attachmentPaths.map((filePath) => `- ${filePath}`).join("\n")}`
       : "";
-    const promptText = `${prompt}${contextText}${attachmentText}${noticeText}`;
+    const promptText = `${prompt}${contextText}${contextNotice}${attachmentText}${noticeText}`;
     const promptFile = path.join(ATTACHMENT_DIR, `${state.provider}-prompt-${Date.now()}.txt`);
     fs.writeFileSync(promptFile, promptText, "utf8");
     appendTranscript("user", prompt, attachments);
@@ -1506,6 +1589,7 @@ class GenericCliClient {
       piExtensionPath: piExtensionPath || "",
       piSessionDir: PI_SESSION_DIR,
       kimiFlavor,
+      modelChoice: state.modelChoices[provider] || DEFAULT_MODEL_CHOICE,
     });
 
     // Delay the first assistant bubble until text arrives. This allows tools
@@ -1625,6 +1709,25 @@ class GenericCliClient {
 
 const appServer = new AppServerClient();
 const genericCli = new GenericCliClient();
+const modelDiscoveries = new Map<CliProviderId, Promise<void>>();
+
+function refreshModels(provider = state.provider, force = false): void {
+  if (modelDiscoveries.has(provider) || (!force && state.modelCatalogs[provider])) return;
+  const snapshot = state.providers.find(item => item.id === provider);
+  const executable = snapshot?.cliPath || (provider === state.provider ? state.cliPath : null);
+  if (!executable) return;
+  state.modelCatalogs[provider] = { status: "loading", models: [], modelSupported: true, efforts: [] };
+  saveState();
+  const discovery = (provider === "codex" ? appServer.refreshModels() : discoverCliModels(provider, executable, CHAT_DIR))
+    .then(catalog => { state.modelCatalogs[provider] = catalog; })
+    .catch(() => {
+      state.modelCatalogs[provider] = { status: "unavailable", models: [], modelSupported: true, efforts: [], message: "Model discovery unavailable. Use CLI default or a custom model ID, then refresh when signed in." };
+    }).finally(() => {
+      modelDiscoveries.delete(provider);
+      saveState();
+    });
+  modelDiscoveries.set(provider, discovery);
+}
 
 async function handleRequest(request: ChatRequest): Promise<void> {
   if (typeof request.trustAfterEffectsMcp === "boolean") {
@@ -1639,6 +1742,7 @@ async function handleRequest(request: ChatRequest): Promise<void> {
     case "status":
       refreshProviderCatalog();
       if (state.provider === "codex" && state.cliStatus === "ready") await appServer.start();
+      refreshModels(state.provider, true);
       break;
     case "installCodex":
     case "installProvider":
@@ -1654,6 +1758,10 @@ async function handleRequest(request: ChatRequest): Promise<void> {
       break;
     case "send":
       {
+        const prompt = (request.prompt || "").trim();
+        if (!prompt) throw new Error("Enter a message first.");
+        if (state.busy) throw new Error(`${state.providerName} is already working. Stop the current turn or wait for it to finish.`);
+        validateModelChoice(state.modelCatalogs[state.provider], state.modelChoices[state.provider] || DEFAULT_MODEL_CHOICE);
         const preparedRequest = await prepareAfterEffectsRequest(request);
         if (state.provider === "codex") await appServer.sendTurn(preparedRequest);
         else await genericCli.sendTurn(preparedRequest);
@@ -1668,9 +1776,33 @@ async function handleRequest(request: ChatRequest): Promise<void> {
       break;
     case "updateSettings":
       break;
+    case "refreshModels":
+      refreshModels(state.provider, true);
+      break;
+    case "setModel": {
+      if (state.busy) throw new Error("Wait for the current turn to finish before changing its model.");
+      if (request.providerId !== state.provider) throw new Error("The CLI selection changed. Choose the model again for the active CLI.");
+      const choice = normalizeModelChoice(request.modelChoice);
+      validateModelChoice(state.modelCatalogs[state.provider], choice);
+      const previous = state.modelChoices[state.provider] || DEFAULT_MODEL_CHOICE;
+      // A resumed CLI session can retain its previous model/effort even when
+      // flags are omitted. Reset only when returning an override to default.
+      if ((!choice.model && previous.model) || (!choice.effort && previous.effort)) {
+        if (state.provider === "codex") state.threadId = null;
+        else delete providerSessions[state.provider];
+      }
+      state.modelChoices[state.provider] = choice;
+      state.error = null;
+      saveSettings();
+      saveState();
+      break;
+    }
     case "selectProvider": {
-      if (state.busy) throw new Error(`Stop the active ${state.providerName} turn before switching CLI tools.`);
       if (!request.providerId || !PROVIDERS[request.providerId]) throw new Error("Unknown CLI provider.");
+      // Re-selecting the active provider is a harmless duplicate request that
+      // CEP can leave queued while the panel is being redrawn.
+      if (request.providerId === state.provider) break;
+      if (state.busy) throw new Error(`Stop the active ${state.providerName} turn before switching CLI tools.`);
       state.provider = request.providerId;
       state.providerName = PROVIDERS[request.providerId].label;
       const snapshot = inspectProvider(request.providerId);
@@ -1683,6 +1815,7 @@ async function handleRequest(request: ChatRequest): Promise<void> {
       saveSettings();
       saveState();
       if (request.providerId === "codex" && snapshot.cliStatus === "ready") await appServer.start();
+      refreshModels();
       break;
     }
     case "openProviderDocs":
@@ -1761,6 +1894,7 @@ process.on("unhandledRejection", (error) => {
 state.hostStatus = "ready";
 updateBridgeHealthState();
 refreshProviderCatalog();
+refreshModels();
 if (state.provider === "codex" && state.cliStatus === "ready") {
   void appServer.start().catch((error) => {
     state.error = String(error);

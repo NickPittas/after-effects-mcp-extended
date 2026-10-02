@@ -1757,13 +1757,39 @@ var bridgeInstanceId = String((new Date()).getTime()) + "-" + String(Math.floor(
 var bridgeLastTickAt = 0;
 var bridgeIsClosing = false;
 
+function aeWriteTextFileAtomic(filePath, content) {
+    var targetFile = new File(filePath);
+    var temporaryFile = new File(filePath + "." + bridgeInstanceId + "." + String((new Date()).getTime()) + ".tmp");
+    temporaryFile.encoding = "UTF-8";
+    if (!temporaryFile.open("w")) throw new Error("Unable to open temporary bridge file: " + temporaryFile.fsName);
+    if (!temporaryFile.write(content)) {
+        temporaryFile.close();
+        temporaryFile.remove();
+        throw new Error("Unable to write temporary bridge file: " + temporaryFile.fsName);
+    }
+    if (!temporaryFile.close()) {
+        temporaryFile.remove();
+        throw new Error("Unable to close temporary bridge file: " + temporaryFile.fsName);
+    }
+    for (var publishAttempt = 0; publishAttempt < 25; publishAttempt++) {
+        if (targetFile.exists && !targetFile.remove()) {
+            if ($.sleep) $.sleep(10);
+            continue;
+        }
+        if (temporaryFile.rename(targetFile.name)) return true;
+        if ($.sleep) $.sleep(10);
+    }
+    temporaryFile.remove();
+    throw new Error("Unable to publish bridge file: " + targetFile.fsName);
+}
+
 function writeBridgeHeartbeat(stateName) {
     try {
         var heartbeat = new File(Folder.myDocuments.fsName + "/ae-mcp-bridge/ae_bridge_status.json");
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.10.5",
+            version: "1.10.8",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             instanceId: bridgeInstanceId,
@@ -2507,7 +2533,7 @@ function aeInspect(args) {
     var scope = args.scope || "composition";
     if (scope === "capabilities") {
         return {
-            bridgeVersion: "1.10.5",
+            bridgeVersion: "1.10.8",
             command: "aeCommand",
             operations: {
                 inspect: ["get"],
@@ -2517,7 +2543,7 @@ function aeInspect(args) {
                 mask: ["get", "add", "set", "update", "remove"],
                 shape: ["get", "add", "set", "update", "remove", "move", "duplicate"],
                 text: ["get", "add", "set", "update"],
-                layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
+                layer: ["get", "add", "update", "replaceSource", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
                 composition: ["get", "create", "update", "duplicate", "remove"],
                 project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
                 render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
@@ -2538,6 +2564,16 @@ function aeInspect(args) {
                                 { type: "fill", name: "Red Fill", color: [1, 0, 0], opacity: 100 }
                             ]
                         }]
+                    }
+                },
+                replaceLayerSource: {
+                    operation: "layer",
+                    action: "replaceSource",
+                    parameters: {
+                        compName: "Edit",
+                        layerIndex: 1,
+                        sourceItemId: 260,
+                        fixExpressions: false
                     }
                 }
             }
@@ -3204,8 +3240,162 @@ function aeRemoveLayerTrackMatte(layer) {
     return aeLayerSummary(layer);
 }
 
+function aeAssertAllowedParameters(args, allowedNames, context) {
+    var allowed = {};
+    for (var allowedIndex = 0; allowedIndex < allowedNames.length; allowedIndex++) allowed[allowedNames[allowedIndex]] = true;
+    var unsupported = [];
+    for (var parameterName in args) {
+        if (args.hasOwnProperty(parameterName) && !allowed[parameterName]) unsupported.push(parameterName);
+    }
+    if (unsupported.length) {
+        throw new Error(context + " received unsupported parameter" + (unsupported.length === 1 ? "" : "s") + ": " + unsupported.join(", ") + ".");
+    }
+}
+
+function aeResolveReplacementSource(args) {
+    var selectorCount = 0;
+    if (args.sourceItemId !== undefined && args.sourceItemId !== null) selectorCount++;
+    if (args.sourceItemIndex !== undefined && args.sourceItemIndex !== null) selectorCount++;
+    if (args.sourceItemName) selectorCount++;
+    if (selectorCount !== 1) throw new Error("Source replacement requires exactly one of sourceItemId, sourceItemIndex, or sourceItemName.");
+
+    var result = null;
+    if (args.sourceItemName) {
+        var matches = [];
+        for (var itemIndex = 1; itemIndex <= app.project.numItems; itemIndex++) {
+            var candidate = app.project.item(itemIndex);
+            if (candidate.name === args.sourceItemName) matches.push(candidate);
+        }
+        if (matches.length === 0) throw new Error("Replacement source project item not found: " + args.sourceItemName);
+        if (matches.length > 1) throw new Error("Replacement source name is ambiguous: " + args.sourceItemName + ". Use sourceItemId or sourceItemIndex.");
+        result = { item: matches[0], index: aeProjectItemIndex(matches[0]) };
+    } else {
+        result = aeGetProjectItem({
+            itemId: args.sourceItemId,
+            itemIndex: args.sourceItemIndex,
+            active: false
+        });
+    }
+    if (!aeIsAVItem(result.item)) throw new Error("Replacement source must be a footage item or composition.");
+    return result;
+}
+
+function aeTimeRemapSourceWarnings(layer, sourceItem) {
+    var warnings = [];
+    var duration = null;
+    try { duration = sourceItem.duration; } catch (_replacementDurationError) {}
+    if (duration === null || duration === undefined || !isFinite(duration) || duration < 0) return warnings;
+
+    var enabled = false;
+    try { enabled = layer.timeRemapEnabled === true; } catch (_replacementTimeRemapEnabledError) {}
+    if (!enabled) return warnings;
+    var timeRemap = null;
+    try { timeRemap = layer.property("ADBE Time Remapping"); } catch (_replacementTimeRemapPropertyError) {}
+    if (!timeRemap) return warnings;
+    for (var keyIndex = 1; keyIndex <= timeRemap.numKeys; keyIndex++) {
+        var sourceTime = timeRemap.keyValue(keyIndex);
+        if (typeof sourceTime === "number" && (sourceTime < 0 || sourceTime > duration + 0.000001)) {
+            warnings.push({
+                type: "timeRemapOutOfRange",
+                keyIndex: keyIndex,
+                layerTime: timeRemap.keyTime(keyIndex),
+                sourceTime: sourceTime,
+                sourceDuration: duration
+            });
+        }
+    }
+    return warnings;
+}
+
+function aePrepareSourceReplacement(comp, args) {
+    var layer = aeGetLayer(comp, args);
+    if (typeof layer.replaceSource !== "function") throw new Error("Target layer is not an AVLayer with a replaceable source.");
+    var previousSource = null;
+    try { previousSource = layer.source; } catch (_previousSourceError) {}
+    if (!previousSource) throw new Error("Target layer does not have a replaceable source.");
+    var sourceResult = aeResolveReplacementSource(args);
+    return {
+        layer: layer,
+        previousSource: previousSource,
+        source: sourceResult.item,
+        fixExpressions: args.fixExpressions === true
+    };
+}
+
+function aeApplyPreparedSourceReplacement(prepared) {
+    var previousSummary = aeProjectItemSummary(prepared.previousSource);
+    prepared.layer.replaceSource(prepared.source, prepared.fixExpressions);
+    var actualSource = null;
+    try { actualSource = prepared.layer.source; } catch (_actualSourceError) {}
+    if (actualSource !== prepared.source) throw new Error("After Effects did not apply the requested source replacement.");
+    return {
+        layerIndex: prepared.layer.index,
+        layerName: prepared.layer.name,
+        previousSource: previousSummary,
+        source: aeProjectItemSummary(actualSource),
+        fixExpressions: prepared.fixExpressions,
+        warnings: aeTimeRemapSourceWarnings(prepared.layer, actualSource)
+    };
+}
+
+function aeReplaceLayerSources(comp, args) {
+    var isBulk = args.replacements !== undefined;
+    var specs = isBulk ? args.replacements : [args];
+    if (!specs || typeof specs.length !== "number" || specs.length === 0) throw new Error("Source replacement requires a mapping or a non-empty replacements array.");
+    var atomic = isBulk && args.atomic === true;
+    var prepared = [];
+    var seenLayers = [];
+
+    if (!isBulk || atomic) {
+        for (var validationIndex = 0; validationIndex < specs.length; validationIndex++) {
+            var validationArgs = aeMergeObjects(args, specs[validationIndex]);
+            var validation = aePrepareSourceReplacement(comp, validationArgs);
+            for (var seenIndex = 0; seenIndex < seenLayers.length; seenIndex++) {
+                if (seenLayers[seenIndex] === validation.layer) throw new Error("The same target layer appears more than once in the replacement batch: " + validation.layer.name);
+            }
+            seenLayers.push(validation.layer);
+            prepared.push(validation);
+        }
+    }
+
+    if (!isBulk) return aeApplyPreparedSourceReplacement(prepared[0]);
+
+    var results = [];
+    if (!atomic) {
+        for (var mappingIndex = 0; mappingIndex < specs.length; mappingIndex++) {
+            try {
+                var mappingArgs = aeMergeObjects(args, specs[mappingIndex]);
+                results.push({ status: "success", data: aeApplyPreparedSourceReplacement(aePrepareSourceReplacement(comp, mappingArgs)) });
+            } catch (mappingError) {
+                results.push({ status: "error", message: mappingError.toString(), mappingIndex: mappingIndex });
+            }
+        }
+        return { count: results.length, atomic: false, results: results };
+    }
+
+    try {
+        for (var replacementIndex = 0; replacementIndex < prepared.length; replacementIndex++) {
+            results.push(aeApplyPreparedSourceReplacement(prepared[replacementIndex]));
+        }
+    } catch (replacementError) {
+        var rollbackErrors = [];
+        for (var rollbackIndex = prepared.length - 1; rollbackIndex >= 0; rollbackIndex--) {
+            try {
+                if (prepared[rollbackIndex].layer.source !== prepared[rollbackIndex].previousSource) {
+                    prepared[rollbackIndex].layer.replaceSource(prepared[rollbackIndex].previousSource, false);
+                }
+            } catch (rollbackError) {
+                rollbackErrors.push(rollbackError.toString());
+            }
+        }
+        throw new Error("Atomic source replacement failed and was rolled back: " + replacementError.toString() + (rollbackErrors.length ? " Rollback errors: " + rollbackErrors.join(" | ") : ""));
+    }
+    return { count: results.length, atomic: true, results: results };
+}
+
 function aeLayerCommand(args) {
     var comp = aeGetComposition(args);
+    if (args.action === "replaceSource") return aeReplaceLayerSources(comp, args);
     if (args.action === "precompose") {
         var layerIndices = args.layerIndices || (args.layerIndex !== undefined ? [args.layerIndex] : null);
         if (!layerIndices || layerIndices.length === 0) throw new Error("Precompose requires layerIndices or layerIndex.");
@@ -3256,6 +3446,13 @@ function aeLayerCommand(args) {
     var layer = aeGetLayer(comp, args);
     if (args.action === "get") return aeLayerSummary(layer);
     if (args.action === "update") {
+        aeAssertAllowedParameters(args, [
+            "operation", "action", "compId", "compIndex", "compName", "layerIndex", "layerName", "timeoutMs",
+            "name", "enabled", "locked", "shy", "solo", "threeDLayer", "adjustmentLayer", "guideLayer", "motionBlur",
+            "collapseTransformation", "preserveTransparency", "audioEnabled", "frameBlending", "inPoint", "outPoint",
+            "startTime", "stretch", "label", "comment", "blendingMode", "timeRemapEnabled", "parentLayerIndex",
+            "trackMatteLayerIndex", "trackMatteLayerName", "trackMatteType", "removeTrackMatte"
+        ], "layer/update");
         var changed = [];
         var switches = ["name", "enabled", "locked", "shy", "solo", "threeDLayer", "adjustmentLayer", "guideLayer", "motionBlur", "collapseTransformation", "preserveTransparency", "audioEnabled", "frameBlending", "inPoint", "outPoint", "startTime", "stretch", "label", "comment"];
         for (var i = 0; i < switches.length; i++) {
@@ -3289,6 +3486,7 @@ function aeLayerCommand(args) {
             aeRemoveLayerTrackMatte(layer);
             changed.push("trackMatte");
         }
+        if (changed.length === 0) throw new Error("layer/update requires at least one supported property to change.");
         return { layer: aeLayerSummary(layer), changedProperties: changed };
     }
     if (args.action === "setTrackMatte") {
@@ -4533,26 +4731,8 @@ function executeCommand(command, args, commandId) {
             // We'll still continue with the original string
         }
         
-        var resultFile = new File(getResultFilePath());
-        resultFile.encoding = "UTF-8"; // Ensure UTF-8 encoding
-        logToPanel("Opening result file for writing...");
-        var opened = resultFile.open("w");
-        if (!opened) {
-            logToPanel("ERROR: Failed to open result file for writing: " + resultFile.fsName);
-            throw new Error("Failed to open result file for writing.");
-        }
-        logToPanel("Writing to result file...");
-        var written = resultFile.write(resultString);
-        if (!written) {
-             logToPanel("ERROR: Failed to write to result file (write returned false): " + resultFile.fsName);
-             // Still try to close, but log the error
-        }
-        logToPanel("Closing result file...");
-        var closed = resultFile.close();
-         if (!closed) {
-             logToPanel("ERROR: Failed to close result file: " + resultFile.fsName);
-             // Continue, but log the error
-        }
+        logToPanel("Publishing result file atomically...");
+        aeWriteTextFileAtomic(getResultFilePath(), resultString);
         logToPanel("Result file write process complete.");
         
         logToPanel("Command completed successfully: " + command); // Changed log message
@@ -4579,15 +4759,8 @@ function executeCommand(command, args, commandId) {
                 line: error.line,
                 fileName: error.fileName
             });
-            var errorFile = new File(getResultFilePath());
-            errorFile.encoding = "UTF-8";
-            if (errorFile.open("w")) {
-                errorFile.write(errorResult);
-                errorFile.close();
-                logToPanel("Successfully wrote ERROR to result file.");
-            } else {
-                 logToPanel("CRITICAL ERROR: Failed to open result file to write error!");
-            }
+            aeWriteTextFileAtomic(getResultFilePath(), errorResult);
+            logToPanel("Successfully wrote ERROR to result file.");
         } catch (writeError) {
              logToPanel("CRITICAL ERROR: Failed to write error to result file: " + writeError.toString());
         }
@@ -4617,9 +4790,7 @@ function updateCommandStatus(status, commandId) {
                 commandData.status = status;
                 commandData.statusUpdatedAt = (new Date()).getTime();
                 
-                commandFile.open("w");
-                commandFile.write(JSON.stringify(commandData, null, 2));
-                commandFile.close();
+                aeWriteTextFileAtomic(getCommandFilePath(), JSON.stringify(commandData, null, 2));
             }
         }
     } catch (e) {
@@ -4710,18 +4881,11 @@ function recoverInterruptedBridgeCommand() {
                 message: "After Effects interrupted this command during a project or panel lifecycle transition. Retry the request.",
                 _responseTimestamp: (new Date()).getTime()
             };
-            resultFile.encoding = "UTF-8";
-            if (resultFile.open("w")) {
-                resultFile.write(JSON.stringify(existingResult, null, 2));
-                resultFile.close();
-            }
+            aeWriteTextFileAtomic(getResultFilePath(), JSON.stringify(existingResult, null, 2));
             commandData.status = "error";
         }
         commandData.statusUpdatedAt = (new Date()).getTime();
-        if (commandFile.open("w")) {
-            commandFile.write(JSON.stringify(commandData, null, 2));
-            commandFile.close();
-        }
+        aeWriteTextFileAtomic(getCommandFilePath(), JSON.stringify(commandData, null, 2));
         return true;
     } catch (error) {
         logToPanel("Unable to recover interrupted command: " + error.toString());
@@ -4741,9 +4905,7 @@ function retargetPendingBridgeCommandOwner(previousInstanceId, nextInstanceId) {
         if (commandData.status !== "pending" || commandData.bridgeInstanceId !== previousInstanceId) return false;
         commandData.bridgeInstanceId = nextInstanceId;
         commandData.statusUpdatedAt = (new Date()).getTime();
-        if (!commandFile.open("w")) return false;
-        commandFile.write(JSON.stringify(commandData, null, 2));
-        commandFile.close();
+        aeWriteTextFileAtomic(getCommandFilePath(), JSON.stringify(commandData, null, 2));
         return true;
     } catch (error) {
         logToPanel("Unable to transfer pending command ownership: " + error.toString());

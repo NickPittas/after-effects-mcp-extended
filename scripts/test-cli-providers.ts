@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { normalizeModelChoice, parseModelCatalog, validateModelChoice } from "../src/cli-models.js";
 import {
   PROVIDER_ORDER,
   buildProviderRunSpec,
+  compareCliVersions,
   createOpenCodeMcpConfig,
   executableInvocation,
   findProviderExecutable,
@@ -28,6 +30,9 @@ const base = {
 };
 
 assert.deepEqual(PROVIDER_ORDER, ["codex", "claude", "agy", "kimi", "pi", "opencode"]);
+assert(compareCliVersions("codex-cli 0.159.0-alpha.12.1", "codex-cli 0.146.0") > 0);
+assert(compareCliVersions("codex-cli 0.159.0", "codex-cli 0.159.0-alpha.12.1") > 0);
+assert(compareCliVersions("codex-cli 0.159.0-alpha.12.1", "codex-cli 0.159.0-alpha.9") > 0);
 
 const specs = Object.fromEntries(
   (["claude", "agy", "kimi", "pi", "opencode"] as CliProviderId[]).map((provider) => [provider, buildProviderRunSpec({ ...base, provider })]),
@@ -64,6 +69,29 @@ assert.equal(JSON.parse(specs.opencode.env?.OPENCODE_CONFIG_CONTENT || "{}").mcp
 assert.deepEqual(JSON.parse(specs.opencode.env?.OPENCODE_CONFIG_CONTENT || "{}").instructions, [base.systemPromptPath]);
 assert.equal((createOpenCodeMcpConfig(base.mcpExecutable) as any).mcp.AfterEffectsMCP.enabled, true);
 
+for (const provider of ["claude", "agy", "kimi", "pi", "opencode"] as CliProviderId[]) {
+  const spec = buildProviderRunSpec({ ...base, provider, modelChoice: { model: "fixture-model", provider: provider === "pi" || provider === "opencode" ? "fixture-provider" : null, effort: provider === "kimi" ? null : "high" } });
+  const modelIndex = spec.args.indexOf("--model");
+  assert.equal(spec.args[modelIndex + 1], provider === "opencode" ? "fixture-provider/fixture-model" : "fixture-model");
+  if (provider === "pi") assert.equal(spec.args[spec.args.indexOf("--provider") + 1], "fixture-provider");
+  if (provider !== "kimi") assert.equal(spec.args[spec.args.indexOf(provider === "pi" ? "--thinking" : provider === "opencode" ? "--variant" : "--effort") + 1], "high");
+  const defaults = buildProviderRunSpec({ ...base, provider, modelChoice: { model: null, provider: null, effort: null } });
+  assert(!defaults.args.includes("--model"), "CLI default must omit the model override");
+}
+const piModels = parseModelCatalog("pi", "provider model context max-out thinking images\nzai glm-test 200K 30K yes yes\nother plain-test 100K 10K no no");
+assert.equal(piModels[0].provider, "zai");
+assert.deepEqual(piModels[1].efforts, []);
+const openModels = parseModelCatalog("opencode", 'provider/model-one\n{\n "name": "Model One",\n "variants": {"high": {}, "disabled": {"disabled": true}}\n}\nprovider/model-two\n{\n"variants": {}\n}');
+assert.deepEqual(openModels[0].efforts, ["high"]);
+assert.equal(openModels[1].id, "model-two");
+assert.deepEqual(parseModelCatalog("agy", "Fetching available models...\nclaude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\ngemini-legacy"), [
+  {id:"claude-sonnet-4-6",label:"Claude Sonnet 4.6 (Thinking)"},
+  {id:"gemini-legacy",label:"gemini-legacy"},
+]);
+assert.deepEqual(parseModelCatalog("kimi", JSON.stringify({models:{"kimi-test":{api_key:"must-not-leak"}}})), [{id:"kimi-test",label:"kimi-test"}]);
+assert.throws(() => normalizeModelChoice({model:"foo & echo bad"}));
+assert.throws(() => validateModelChoice({status:"ready",models:[],modelSupported:true,efforts:["low"]}, {model:"fixture",provider:null,effort:"high"}));
+
 const terminal = visibleTerminalInvocation("C:\\Program Files\\Pi's CLI\\pi.cmd", [], "Pi Sign In");
 assert.equal(terminal.command, "powershell.exe");
 assert.deepEqual(terminal.args.slice(0, 2), ["-NoProfile", "-EncodedCommand"]);
@@ -76,6 +104,8 @@ assert.match(piExtension, /composition: \["get", "create", "update", "duplicate"
 assert.match(piExtension, /project: \["get", "new", "open"/);
 assert.match(piExtension, /Composition creation is composition\/create, never composition\/add/);
 assert.match(piExtension, /inspect\/get with parameters \{scope:'capabilities'\}/);
+assert.match(piExtension, /layer\/replaceSource/);
+assert.match(piExtension, /atomic=true/);
 assert.match(piExtension, /never substitute a solid/);
 assert.match(piExtension, /Unsupported action/);
 assert.match(piExtension, /ae_command\.lock/);
@@ -96,11 +126,26 @@ assert.match(harnessPrompt, /ServerName.*AfterEffectsMCP/);
 assert.match(harnessPrompt, /ToolName.*after-effects/);
 
 const bridgePanel = fs.readFileSync("src/scripts/mcp-bridge-auto.jsx", "utf8");
+assert.match(bridgePanel, /layer: \["get", "add", "update", "replaceSource"/);
+assert.match(bridgePanel, /aeWriteTextFileAtomic\(getResultFilePath\(\)/);
+assert.match(bridgePanel, /aeWriteTextFileAtomic\(getCommandFilePath\(\)/);
 assert.match(bridgePanel, /scheduleTask\([\s\S]*checkInterval,[\s\S]*true/);
 assert.match(bridgePanel, /aeMcpBridgeScheduledTick\(scheduledInstanceId\)/);
 assert.match(bridgePanel, /taskExpression/);
 assert.match(bridgePanel, /__aeMcpBridgeWake = wakeBridgeCommandChecker/);
 assert.match(bridgePanel, /Recovered an interrupted bridge check/);
+
+const mcpServer = fs.readFileSync("src/index.ts", "utf8");
+assert.match(mcpServer, /operation === "inspect"[\s\S]*?60000/);
+assert.match(mcpServer, /writeJsonFileAtomic\(commandFile, commandData\)/);
+assert.match(mcpServer, /writeJsonFileAtomic\(resultFile, resetData\)/);
+
+const chatHost = fs.readFileSync("src/chat-host.ts", "utf8");
+assert.match(chatHost, /runAeBridgeCommand\([\s\S]*?timeoutMs = 60000/);
+assert.match(chatHost, /filePath !== AE_COMMAND_PATH && filePath !== AE_RESULT_PATH/);
+
+const cliProviders = fs.readFileSync("src/cli-providers.ts", "utf8");
+assert.match(cliProviders, /AE_MCP_\$\{id\.toUpperCase\(\)\}_EXECUTABLE/);
 assert.match(bridgePanel, /function recoverInterruptedBridgeCommand/);
 assert.match(bridgePanel, /commandData\.bridgeInstanceId/);
 assert.match(bridgePanel, /function retargetPendingBridgeCommandOwner/);
@@ -125,7 +170,6 @@ assert.match(cepMain, /bridgeHostEarliestEvalAt/);
 assert.match(cepMain, /function failBridgeCommand/);
 assert.match(cepMain, /documentAfterActivate/);
 
-const chatHost = fs.readFileSync("src/chat-host.ts", "utf8");
 assert.match(chatHost, /const initialHealth = readBridgeHeartbeat\(\)/);
 assert.match(chatHost, /const health = readBridgeHeartbeat\(\)/);
 assert.match(chatHost, /timeoutMs,/);

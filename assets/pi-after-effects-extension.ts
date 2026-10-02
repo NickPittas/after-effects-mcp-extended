@@ -10,6 +10,30 @@ const resultPath = path.join(bridgeDirectory, "ae_mcp_result.json");
 const lockPath = path.join(bridgeDirectory, "ae_command.lock");
 const heartbeatPath = path.join(bridgeDirectory, "ae_bridge_status.json");
 
+async function writeJsonAtomic(filePath: string, value: unknown): Promise<void> {
+  const temporaryPath = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  await fs.writeFile(temporaryPath, JSON.stringify(value, null, 2), "utf8");
+  let lastError: unknown = null;
+  for (let attempt = 0; attempt < 25; attempt++) {
+    try {
+      await fs.rename(temporaryPath, filePath);
+      return;
+    } catch (error) {
+      lastError = error;
+      try { await fs.unlink(filePath); } catch {}
+      try {
+        await fs.rename(temporaryPath, filePath);
+        return;
+      } catch (retryError) {
+        lastError = retryError;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  try { await fs.unlink(temporaryPath); } catch {}
+  throw lastError instanceof Error ? lastError : new Error(`Unable to atomically write ${filePath}`);
+}
+
 const operationActions: Record<string, readonly string[]> = {
   inspect: ["get"],
   property: ["get", "set", "expression"],
@@ -18,7 +42,7 @@ const operationActions: Record<string, readonly string[]> = {
   mask: ["get", "add", "set", "update", "remove"],
   shape: ["get", "add", "set", "update", "remove", "move", "duplicate"],
   text: ["get", "add", "set", "update"],
-  layer: ["get", "add", "update", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
+  layer: ["get", "add", "update", "replaceSource", "duplicate", "remove", "move", "precompose", "setTrackMatte", "removeTrackMatte", "timeRemap"],
   composition: ["get", "create", "update", "duplicate", "remove"],
   project: ["get", "new", "open", "media", "getItem", "updateItem", "import", "relink", "reload", "interpret", "proxy", "dependencies", "manifest", "cleanup", "createFolder", "save", "queueRender"],
   render: ["get", "add", "templates", "queueInAME", "show", "render", "update", "duplicate", "remove", "addOutput", "getOutput", "updateOutput", "removeOutput", "applyTemplate", "saveTemplate"],
@@ -102,6 +126,7 @@ export default function (pi: ExtensionAPI) {
       "Never inspect MCP or bridge source files or run shell commands to discover capabilities. If uncertain, call inspect/get with parameters {scope:'capabilities'}.",
       "Prefer an inspect operation before edits when layer, composition, or property selectors are uncertain.",
       "Use operation=composition and action=create to create a composition; action=add is invalid for compositions.",
+      "To swap media only on an existing timeline layer while preserving its effects, masks, transforms, timing, and time remapping, use layer/replaceSource with a layer selector and exactly one of sourceItemId, sourceItemIndex, or sourceItemName. Prefer sourceItemId; names must be unique. Use replacements plus atomic=true for a validated bulk swap.",
       "For composition/create, pass name, width, height, pixelAspect, duration, and frameRate in parameters. Omitted values default to Composition, 1920, 1080, 1, 10 seconds, and 25 fps.",
       "Use the native object requested. A requested vector shape must use shape/add; never substitute a solid because you are unsure of the shape parameters.",
       'For a centered 400px red vector square in an HD comp, use shape/add parameters like {"compName":"Harness Test","createLayer":{"name":"Red Square","position":[960,540]},"items":[{"type":"group","name":"Red Square","items":[{"type":"rectangle","name":"Rectangle Path","size":[400,400],"position":[0,0]},{"type":"fill","name":"Red Fill","color":[1,0,0],"opacity":100}]}]}.',
@@ -122,8 +147,10 @@ export default function (pi: ExtensionAPI) {
       }
       await fs.mkdir(bridgeDirectory, { recursive: true });
       await assertBridgeAvailable();
-      const requestedTimeout = Number((params.parameters as Record<string, unknown> | undefined)?.timeoutMs || 30000);
-      const timeoutMs = Math.min(600000, Math.max(1000, Number.isFinite(requestedTimeout) ? requestedTimeout : 30000));
+      const requestedTimeout = Number((params.parameters as Record<string, unknown> | undefined)?.timeoutMs);
+      const defaultTimeout = params.operation === "inspect" ? 60000 :
+        params.operation === "layer" && params.action === "replaceSource" && Array.isArray((params.parameters as Record<string, unknown> | undefined)?.replacements) ? 120000 : 30000;
+      const timeoutMs = Math.min(600000, Math.max(1000, Number.isFinite(requestedTimeout) ? requestedTimeout : defaultTimeout));
       const releaseBridge = await acquireBridgeLock(timeoutMs + 5000, signal);
       try {
         // The active ScriptUI/CEP bridge may change while waiting for another
@@ -131,8 +158,8 @@ export default function (pi: ExtensionAPI) {
         // instance across a project lifecycle transition.
         const bridgeStatus = await assertBridgeAvailable();
         const commandId = `pi-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        await fs.writeFile(resultPath, JSON.stringify({ status: "waiting", _commandId: commandId, message: "Waiting for After Effects" }, null, 2), "utf8");
-        await fs.writeFile(commandPath, JSON.stringify({
+        await writeJsonAtomic(resultPath, { status: "waiting", _commandId: commandId, message: "Waiting for After Effects" });
+        await writeJsonAtomic(commandPath, {
           command: "aeCommand",
           id: commandId,
           args: { operation: params.operation, action: params.action, ...(params.parameters || {}) },
@@ -140,7 +167,7 @@ export default function (pi: ExtensionAPI) {
           timeoutMs,
           timestamp: new Date().toISOString(),
           status: "pending",
-        }, null, 2), "utf8");
+        });
         const result = await waitForResult(commandId, timeoutMs, signal);
         return {
           content: [{ type: "text", text: JSON.stringify(result, null, 2) }],

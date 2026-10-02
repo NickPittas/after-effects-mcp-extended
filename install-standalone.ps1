@@ -18,22 +18,27 @@ foreach ($requiredFile in @($panelSource, $mcpSource, $chatSource, $piExtensionS
     }
 }
 
-# Stop only the chat companion being replaced. Both the ScriptUI bridge and
-# the CEP panel use this same background process and single-instance lock.
+# Stop both background executables before replacing them. The MCP server can
+# remain alive after After Effects closes because its CLI client owns it.
+$installedExecutables = @("after-effects-codex-chat.exe", "after-effects-mcp-extended.exe")
 $companions = Get-CimInstance Win32_Process | Where-Object {
-    $_.ExecutablePath -and $_.ExecutablePath.EndsWith("after-effects-codex-chat.exe", [System.StringComparison]::OrdinalIgnoreCase)
+    if (-not $_.ExecutablePath) { return $false }
+    $processName = [System.IO.Path]::GetFileName($_.ExecutablePath)
+    return $installedExecutables -contains $processName
 }
 $companions | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }
 for ($attempt = 0; $attempt -lt 20; $attempt++) {
     $remaining = Get-CimInstance Win32_Process | Where-Object {
-        $_.ExecutablePath -and $_.ExecutablePath.EndsWith("after-effects-codex-chat.exe", [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $_.ExecutablePath) { return $false }
+        $processName = [System.IO.Path]::GetFileName($_.ExecutablePath)
+        return $installedExecutables -contains $processName
     }
     if (-not $remaining) { break }
     Start-Sleep -Milliseconds 150
 }
 $hostLock = Join-Path $env:USERPROFILE "Documents\ae-mcp-bridge\codex-chat\host.lock"
 $remainingCompanion = Get-CimInstance Win32_Process | Where-Object {
-    $_.ExecutablePath -and $_.ExecutablePath.EndsWith("after-effects-codex-chat.exe", [System.StringComparison]::OrdinalIgnoreCase)
+    $_.ExecutablePath -and [System.IO.Path]::GetFileName($_.ExecutablePath) -eq "after-effects-codex-chat.exe"
 }
 if (-not $remainingCompanion -and (Test-Path -LiteralPath $hostLock)) {
     Remove-Item -LiteralPath $hostLock -Force
