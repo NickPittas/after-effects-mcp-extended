@@ -263,6 +263,21 @@ not silently switch layer/renderer modes or replace native text animation with
 layer transforms. Failed creation removes only the newly created group;
 updates are not transactional, so use AE Undo if an update fails partway through.
 
+Naming an animator `Position` does not add its Position property. Supply an
+explicit `properties` list, for example `[{"property":"position","value":[0,0,0]}]`.
+AE can expose dormant animator properties through its scripting catalog before
+they have been added. A catalog lookup, a default value, or a successful empty
+animator creation is not proof that the property can be animated. The bridge
+must activate requested properties with native `addProperty()` before writing.
+Do not enable layer 3D or replace the text layer as a workaround for a failure.
+
+The opt-in native check is `node scripts/test-live-text-animators.mjs --live`.
+Run it after building, with bridge 1.10.12 loaded and the chat idle. It creates
+and removes only a uniquely identified temporary composition, checks Position
+keyframes/expressions and default-valued activation, and compares rendered
+frames. It never saves or edits existing compositions; project undo history
+and the dirty flag can still be affected by creating/removing the test fixture.
+
 ### 📘 Creating Compositions
 
 You can create new compositions with custom settings:

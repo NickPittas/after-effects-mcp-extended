@@ -200,7 +200,7 @@
     if (!force && Date.now() - lastCepHeartbeatWrite < 700) return;
     lastCepHeartbeatWrite = Date.now();
     var heartbeat = {
-      version: "1.10.11",
+      version: "1.10.12",
       state: stateName || (bridgeHostBusy ? "checking" : "ready"),
       autoRun: bridgeEnabled && stateName !== "closed",
       instanceId: bridgeInstanceId,
@@ -439,7 +439,7 @@
     elements.bridgeAutoRun.disabled = Boolean(legacyActive || bridgeHostBusy);
     elements.bridgeCheckButton.disabled = Boolean(legacyActive || !bridgeEnabled || bridgeHostBusy);
     elements.bridgeEngineText.textContent = legacyActive ? "Standalone ScriptUI" : "Integrated CEP";
-    elements.bridgeVersionText.textContent = heartbeat && heartbeat.version || "1.10.11";
+    elements.bridgeVersionText.textContent = heartbeat && heartbeat.version || "1.10.12";
     elements.bridgeCommandPath.textContent = documentsPath + "/ae-mcp-bridge/ae_command.json";
     var command = bridgeCommandRecord();
     var result = bridgeResultRecord();

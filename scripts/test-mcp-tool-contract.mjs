@@ -26,6 +26,14 @@ try {
   assert.match(tool.description,/text\/add creates a text layer only/i);
   assert.match(tool.description,/add a native animator to an existing text layer.*operation=text, action=animator, animatorAction=add/i);
   assert.match(tool.description,/Never use effect\/add for a text animator/i);
+  assert.match(tool.description,/for Position use properties:\[\{property:'position',value:\[0,0,0\]\}\]/i);
+  assert.match(tool.description,/animatorName only names the animator and does not choose a property/i);
+  assert.match(tool.description,/dormant catalog entries.*raw counts, non-null lookups, default values, and writability-capability flags do not prove activation.*addedByCommand.*writable property paths\/keyframes.*successful writes/i);
+  assert.match(tool.description,/preserve the existing layer/i);
+  assert.match(tool.description,/keyframe\/set accepts one time and one value/i);
+  assert.match(tool.description,/keyframe\/update\|remove use index/i);
+  assert.match(tool.description,/inEase:\[\{speed,influence\}\],outEase:\[\{speed,influence\}\]/i);
+  assert.doesNotMatch(tool.description,/keyIndex/);
   console.log("Live MCP tools/list exposes animator and selector contracts through exactly one tool.");
 } finally { await client.close(); }
 

@@ -25,10 +25,21 @@ const addableChildren = {
   "ADBE Text Animator Properties": animatorPropertyMatchNames,
   "ADBE Text Selectors": selectorMatchNames
 };
-function node(matchName, children = null, value = 0) {
-  const result = {matchName,name:matchName,children,value,keys:[],expression:"",enabled:true};
+function animatorPropertyDefault(matchName) {
+  if (matchName === "ADBE Text Position 3D" || matchName === "ADBE Text Anchor Point 3D") return [0,0,0];
+  if (matchName === "ADBE Text Scale 3D") return [100,100,100];
+  if (matchName === "ADBE Text Opacity" || matchName === "ADBE Text Fill Opacity" || matchName === "ADBE Text Stroke Opacity") return 100;
+  return 0;
+}
+function node(matchName, children = null, value = 0, active = true) {
+  const result = {matchName,name:matchName,children,value,keys:[],expression:"",expressionEnabled:false,enabled:true,active,isModified:false};
   for (const child of children || []) child.parent = result;
   return result;
+}
+function animatorPropertiesGroup() {
+  const catalog = [...animatorPropertyMatchNames].map(matchName=>node(matchName,null,animatorPropertyDefault(matchName),false));
+  while (catalog.length < 103) catalog.push(node("ADBE Text Dormant Property "+(catalog.length+1),null,0,false));
+  return node("ADBE Text Animator Properties",catalog);
 }
 function selector(matchName) {
   if (matchName === "ADBE Text Selector") return node(matchName,[
@@ -52,34 +63,55 @@ function wrap(target) {
   return new Proxy(target,{
     get(current,key) {
       check();
-      if (key === "propertyType") return current.children ? types.INDEXED_GROUP : types.PROPERTY;
+      if (key === "propertyType") return current.matchName === "ADBE Text Animator Properties" ? types.NAMED_GROUP : (current.children ? types.INDEXED_GROUP : types.PROPERTY);
       if (key === "propertyIndex") return current.parent?.children.indexOf(current)+1 || 1;
       if (key === "numProperties") return current.children?.length || 0;
       if (key === "numKeys") return current.keys.length;
-      if (key === "canSetExpression") return !current.children;
-      if (key === "expressionEnabled") return Boolean(current.expression);
+      if (key === "canSetExpression") return !current.children && (current.parent?.matchName !== "ADBE Text Animator Properties" || current.active);
+      if (key === "canVaryOverTime") return !current.children && (current.parent?.matchName !== "ADBE Text Animator Properties" || current.active);
+      if (key === "expressionEnabled") return current.expressionEnabled;
       if (key === "expressionError") return current.expression === "BAD" ? "invalid expression" : "";
-      if (key === "property") return name => {check();return wrap(typeof name === "number" ? current.children?.[name-1] : current.children?.find(child=>child.matchName===name || child.name===name));};
+      if (key === "property") return name => {
+        check();
+        if (typeof name === "number") return wrap(current.children?.[name-1]);
+        const named = current.children?.filter(child=>child.matchName===name || child.name===name) || [];
+        return wrap(named.find(child=>child.active) || named[0]);
+      };
       if (key === "canAddProperty") return name => {check();return Boolean(addableChildren[current.matchName]?.has(name));};
       if (key === "addProperty") return name => {
         check();
         if (!addableChildren[current.matchName]?.has(name)) throw new Error("Property is not addable to this AE group: " + name);
+        if (current.matchName === "ADBE Text Animator Properties") {
+          const dormant = current.children.find(property=>property.matchName===name && !property.active);
+          if (!dormant) throw new Error("Animator property is missing or already active: " + name);
+          const child = node(name,null,animatorPropertyDefault(name),true);
+          child.parent=current;
+          current.children.push(child);
+          generation++;
+          return wrap(child);
+        }
         let child;
-        if (name === "ADBE Text Animator") child=node(name,[node("ADBE Text Animator Properties",[]),node("ADBE Text Selectors",[selector("ADBE Text Selector")])]);
+        if (name === "ADBE Text Animator") child=node(name,[animatorPropertiesGroup(),node("ADBE Text Selectors",[selector("ADBE Text Selector")])]);
         else if (/Selector$/.test(name)) child=selector(name);
         else child=node(name);
         child.parent=current;current.children.push(child);generation++;return wrap(child);
       };
-      if (key === "remove") return () => {check();current.parent.children.splice(current.parent.children.indexOf(current),1);generation++;};
+      if (key === "remove") return () => {
+        check();
+        current.parent.children.splice(current.parent.children.indexOf(current),1);
+        generation++;
+      };
       if (key === "setValue") return value => {
-        check();if (current.keys.length) throw new Error("Cannot set a static value on an animated property");current.value=value;
+        check();
+        if (current.parent?.matchName === "ADBE Text Animator Properties" && !current.active) throw new Error("Cannot write a dormant animator property before addProperty activates it.");
+        if (current.keys.length) throw new Error("Cannot set a static value on an animated property");current.value=value;current.isModified=true;
         if (current.matchName === "ADBE Text Range Units") {
           const range=current.parent.parent;
           for (const child of range.children) child.matchName=child.matchName.replace(/(Percent|Index) /,value===2 ? "Index " : "Percent ");
           generation++;
         }
       };
-      if (key === "setValueAtTime") return (time,value) => {check();let entry=current.keys.find(key=>key.time===time);if(entry)entry.value=value;else current.keys.push({time,value});current.keys.sort((a,b)=>a.time-b.time);current.value=value;};
+      if (key === "setValueAtTime") return (time,value) => {check();if(current.parent?.matchName==="ADBE Text Animator Properties"&&!current.active)throw new Error("Cannot keyframe a dormant animator property before addProperty activates it.");let entry=current.keys.find(key=>key.time===time);if(entry)entry.value=value;else current.keys.push({time,value});current.keys.sort((a,b)=>a.time-b.time);current.value=value;current.isModified=true;};
       if (key === "nearestKeyIndex") return time => {check();return current.keys.findIndex(key=>key.time===time)+1;};
       if (key === "keyTime") return index => {check();return current.keys[index-1].time;};
       if (key === "keyValue") return index => {check();return current.keys[index-1].value;};
@@ -89,29 +121,52 @@ function wrap(target) {
       if (key === "keyTemporalAutoBezier" || key === "keyTemporalContinuous") return () => false;
       return current[key];
     },
-    set(current,key,value) {check();current[key]=value;return true;}
+    set(current,key,value) {
+      check();
+      if (current.parent?.matchName === "ADBE Text Animator Properties" && !current.active && (key === "expression" || key === "expressionEnabled")) throw new Error("Cannot edit a dormant animator property before addProperty activates it.");
+      current[key]=value;
+      if (key === "expression" || key === "expressionEnabled") current.isModified=true;
+      return true;
+    }
   });
 }
 const animatorRoot = node("ADBE Text Animators",[]);
 const textRoot = node("ADBE Text Properties",[node("ADBE Text Document",null,{}),animatorRoot]);
 const layer = {name:"Title",index:1,property(name) {return name==="ADBE Text Properties" ? wrap(textRoot) : null;}};
-class CompItem {constructor(){this.name="Text Demo";this.id=1;this.frameRate=25;this.numLayers=1;}layer(){return layer;}}
-const comp = new CompItem();
+const otherAnimatorRoot = node("ADBE Text Animators",[]);
+const otherTextRoot = node("ADBE Text Properties",[node("ADBE Text Document",null,{}),otherAnimatorRoot]);
+const otherLayer = {name:"Other Title",index:1,property(name) {return name==="ADBE Text Properties" ? wrap(otherTextRoot) : null;}};
+class CompItem {constructor(name,id,textLayer){this.name=name;this.id=id;this.frameRate=25;this.numLayers=1;this.textLayer=textLayer;}layer(index){return index===1 ? this.textLayer : null;}}
+const comp = new CompItem("Text Demo",1,layer);
 comp.layers = {[1]:layer,addText(){thisOwner.numLayers++;throw new Error("Unexpected text-layer creation in mock.");}};
 const thisOwner = comp;
+const otherComp = new CompItem("Active Comp",2,otherLayer);
+otherComp.layers = {[1]:otherLayer,addText(){otherComp.numLayers++;throw new Error("Unexpected active-comp text-layer creation in mock.");}};
+const projectItems = [null,comp,otherComp];
 class Folder {constructor(file){this.fsName=file;this.exists=true;}create(){return true;}}
 Folder.myDocuments=new Folder("C:/Documents");Folder.userData=new Folder("C:/UserData");Folder.startup=new Folder("C:/AE");
 class File {constructor(file){this.fsName=file;this.name="file";this.exists=false;this.parent=Folder.myDocuments;}}
 const sandbox = {JSON,Math,Date,isFinite,File,Folder,CompItem,Shape:class{},TextDocument:class{},
   PropertyType:types,KeyframeInterpolationType:{LINEAR:1,HOLD:2,BEZIER:3},
   $:{global:{__aeMcpHeadlessBridgeMode:true}},
-  app:{project:{numItems:1,items:[null,comp],activeItem:comp,item(){return comp;}},beginUndoGroup(){},endUndoGroup(){},scheduleTask(){},cancelTask(){}}
+  app:{project:{numItems:2,items:projectItems,activeItem:otherComp,item(index){return projectItems[index];}},beginUndoGroup(){},endUndoGroup(){},scheduleTask(){},cancelTask(){}}
 };
 vm.createContext(sandbox);
 vm.runInContext(fs.readFileSync("src/scripts/mcp-bridge-auto.jsx","utf8").replace(/^#target.*$/gm,""),sandbox);
-const call = args => JSON.parse(sandbox.aeCommand({operation:"text",compName:"Text Demo",layerIndex:1,...args}));
+const call = args => {
+  const defaultComp = args.compName === undefined && args.compId === undefined && args.compIndex === undefined ? {compName:"Text Demo"} : {};
+  return JSON.parse(sandbox.aeCommand({operation:"text",...defaultComp,layerIndex:1,...args}));
+};
 const ok = args => {const result=call(args);assert.equal(result.status,"success",result.message);return result.data;};
-const find = (tree,matchName) => tree.matchName===matchName ? tree : tree.properties?.map(child=>find(child,matchName)).find(Boolean);
+function findAll(tree,matchName,results=[]) {
+  if (tree?.matchName===matchName) results.push(tree);
+  for (const child of tree?.properties || []) findAll(child,matchName,results);
+  return results;
+}
+function find(tree,matchName) {
+  const matches=findAll(tree,matchName);
+  return matches.find(property=>property.canSetExpression===true || property.canVaryOverTime===true) || matches[0];
+}
 
 const layerCountBeforeMisroutedAnimator=comp.numLayers;
 const misroutedAnimator=call({action:"add",name:"Wrong Layer",text:"Hello",createLayer:{name:"Wrong Layer"},animatorName:"Reveal",
@@ -120,20 +175,46 @@ assert.equal(misroutedAnimator.status,"error","text/add must not silently ignore
 assert.match(misroutedAnimator.message,/text action add creates a text layer only.*existing text layer.*action=animator.*layerIndex or layerName/i);
 assert.equal(comp.numLayers,layerCountBeforeMisroutedAnimator,"misrouted animator request created a text layer");
 
-const reveal=ok({action:"animator",animatorAction:"add",animatorName:"Reveal",properties:[{property:"opacity",value:0},{property:"position",value:[0,40,0]},{property:"characterValue",value:65}],
+const reveal=ok({action:"animator",animatorAction:"add",animatorName:"Reveal",properties:[
+  {property:"opacity",value:0},{property:"position",value:[0,40,0],keyframes:[{time:0,value:[0,40,0]},{time:1,value:[0,0,0]}],expression:"value"},
+  {property:"characterValue",value:65}],
   selectors:[{type:"range",name:"Characters",settings:{basedOn:"characters",smoothness:0,start:{keyframes:[{time:0,value:0,inInterpolation:"linear"},{time:25/comp.frameRate,value:100}]}}}]});
 assert.equal(animatorRoot.children.length,1);
 assert.equal(find(reveal,"ADBE Text Opacity").value,0);
+assert.equal(find(reveal,"ADBE Text Opacity").canVaryOverTime,true,"requested opacity must be activated, not mistaken for its dormant default");
+assert.equal(find(reveal,"ADBE Text Position 3D").canSetExpression,true,"requested position must be an active writable animator property");
 assert.equal(find(reveal,"ADBE Text Character Replace").value,65);
+const revealOpacityCopies=findAll(reveal,"ADBE Text Opacity");
+assert.equal(revealOpacityCopies.length,2,"active opacity must be distinct from its dormant catalog entry");
+assert.equal(revealOpacityCopies.find(property=>property.canVaryOverTime===false).value,100,"dormant opacity retains its readable default");
+assert.equal(find(reveal,"ADBE Text Opacity").value,0,"matchName lookup must prefer the writable active instance");
+const revealPropertyGroup=find(reveal,"ADBE Text Animator Properties");
+assert.equal(revealPropertyGroup.propertyCatalog.rawChildCount,106,"three activated children are distinct from the 103-child dormant catalog");
+assert.equal(revealPropertyGroup.propertyCatalog.entriesMayBeDormant,true);
+assert.deepEqual(reveal.animatorPropertyEdit.addedByCommand,["ADBE Text Opacity","ADBE Text Position 3D","ADBE Text Character Replace"]);
 const start=find(reveal,"ADBE Text Percent Start");
 assert.deepEqual(start.keyframes.map(key=>[key.time,key.value]),[[0,0],[1,100]]);
 assert.equal(find(reveal,"ADBE Text Selectors").numProperties,1,"default selector was duplicated");
 const genericKey=JSON.parse(sandbox.aeCommand({operation:"keyframe",action:"set",compName:"Text Demo",layerIndex:1,propertyPath:start.propertyPath,time:2,value:25}));
 assert.equal(genericKey.status,"success",genericKey.message);
-ok({action:"animator",animatorAction:"update",animatorName:"Reveal",newName:"Renamed",properties:[{property:"opacity",remove:true},{matchName:"ADBE Text Line Spacing",value:50}]});
+ok({action:"animator",animatorAction:"update",animatorName:"Reveal",newName:"Renamed",properties:[
+  {property:"opacity",remove:true},{matchName:"ADBE Text Line Spacing",value:50}
+]});
 const updated=ok({action:"animator",animatorIndex:1});
-assert.equal(updated.name,"Renamed");assert.equal(find(updated,"ADBE Text Opacity"),undefined);
+assert.equal(updated.name,"Renamed");
+assert.equal(find(updated,"ADBE Text Opacity").canVaryOverTime,false,"removed opacity remains only as a dormant catalog entry");
 assert.equal(find(updated,"ADBE Text Line Spacing").value,50);
+assert.equal(find(updated,"ADBE Text Position 3D").canVaryOverTime,true,"removing opacity must retain sibling position");
+assert.equal(find(updated,"ADBE Text Character Replace").value,65,"property removal must not delete sibling animator properties");
+const preserved=ok({action:"animator",animatorAction:"update",animatorIndex:1,properties:[{property:"position",expressionEnabled:false}]});
+assert.deepEqual(preserved.animatorPropertyEdit.reusedWritableProperties,["ADBE Text Position 3D"]);
+assert.equal(find(preserved,"ADBE Text Position 3D").keyframes.length,2,"updating an active property must preserve its keyframes");
+assert.equal(find(preserved,"ADBE Text Position 3D").expression,"value","updating an active property must preserve its expression");
+assert.equal(find(preserved,"ADBE Text Position 3D").expressionEnabled,false);
+const trackingUpdate=ok({action:"animator",animatorAction:"update",animatorIndex:1,properties:[{property:"tracking",value:12}]});
+assert.deepEqual(trackingUpdate.animatorPropertyEdit.addedByCommand,["ADBE Text Tracking Amount"]);
+assert.deepEqual(trackingUpdate.animatorPropertyEdit.activationPendingProbe,["ADBE Text Tracking Amount"]);
+assert.equal(find(ok({action:"animator",animatorIndex:1}),"ADBE Text Tracking Amount").canVaryOverTime,true,"updating a dormant property must activate it");
 const indexed=ok({action:"selector",selectorAction:"update",animatorIndex:1,selectorIndex:1,settings:{units:"index",end:5,start:{clearKeys:true,value:0}}});
 assert.equal(find(indexed,"ADBE Text Index End").value,5);
 assert.equal(find(indexed,"ADBE Text Index Start").numKeys,0);
@@ -158,13 +239,49 @@ const legacy=JSON.parse(sandbox.createTextAnimator({compIndex:1,layerIndex:1,ani
   {property:"opacity",value:0},{property:"characterValue",value:72}
 ],selector:{durationInFrames:2,from:0,to:100}}));
 assert.equal(legacy.status,"success",legacy.message);
-const legacyAnimator=animatorRoot.children[1];
+const legacyAnimator=ok({action:"animator",animatorIndex:2});
 assert.equal(legacyAnimator.name,"Legacy Native");
-assert.equal(legacyAnimator.children[0].children[0].matchName,"ADBE Text Opacity");
-assert.equal(legacyAnimator.children[0].children[0].value,0);
-assert.equal(legacyAnimator.children[0].children[1].matchName,"ADBE Text Character Replace");
-assert.equal(legacyAnimator.children[0].children[1].value,72);
+assert.equal(find(legacyAnimator,"ADBE Text Opacity").value,0);
+assert.equal(find(legacyAnimator,"ADBE Text Character Replace").value,72);
 ok({action:"animator",animatorAction:"remove",animatorIndex:2});
+const defaults=ok({action:"animator",animatorAction:"add",animatorName:"Default Values",selectors:[],properties:[{property:"position"},{property:"opacity"}]});
+const defaultPosition=find(defaults,"ADBE Text Position 3D");
+const defaultOpacity=find(defaults,"ADBE Text Opacity");
+assert.deepEqual(defaultPosition.value,[0,0,0]);
+assert.deepEqual(defaultOpacity.value,100);
+assert.equal(defaultPosition.canVaryOverTime,true,"position must activate even when its requested value equals AE's default");
+assert.equal(defaultOpacity.canSetExpression,true,"opacity must activate even when its requested value equals AE's default");
+assert.equal(defaultPosition.isModified,false,"default-valued active properties are not identified by isModified");
+assert.equal(defaultOpacity.isModified,false,"default-valued active opacity is not identified by isModified");
+assert.deepEqual(defaults.animatorPropertyEdit.addedByCommand,["ADBE Text Position 3D","ADBE Text Opacity"]);
+const defaultPositionCopies=findAll(defaults,"ADBE Text Position 3D");
+assert.equal(defaultPositionCopies.length,2,"default-valued active Position remains distinct from its dormant catalog entry");
+assert.equal(defaultPositionCopies.filter(property=>property.canVaryOverTime===true).length,1);
+assert.equal(defaultPositionCopies[0].value[0],defaultPositionCopies[1].value[0],"dormant and active Position both retain the same default value");
+ok({action:"animator",animatorAction:"remove",animatorIndex:2});
+const empty=ok({action:"animator",animatorAction:"add",animatorName:"Dormant Catalog",selectors:[],properties:[]});
+const emptyPropertyGroup=find(empty,"ADBE Text Animator Properties");
+assert.equal(emptyPropertyGroup.propertyCatalog.rawChildCount,103);
+assert.equal(emptyPropertyGroup.propertyCatalog.activationState,"unknown");
+assert.equal(emptyPropertyGroup.propertyCatalog.writableCapabilitiesAreNotVisibilityProof,true);
+assert.deepEqual(empty.animatorPropertyEdit.addedByCommand,[],"dormant catalog entries must not be reported as properties added by this command");
+assert.deepEqual(emptyPropertyGroup.propertyCatalog.writableCapabilityCandidates,[]);
+const dormantOpacity=find(empty,"ADBE Text Opacity");
+assert.equal(dormantOpacity.value,100,"dormant catalog values remain readable");
+assert.equal(dormantOpacity.canVaryOverTime,false,"dormant defaults must not be reported as active animator properties");
+assert.equal(dormantOpacity.canSetExpression,false,"dormant defaults cannot accept expressions until activated");
+assert.equal(dormantOpacity.isModified,false,"isModified is not an activation signal");
+const rootCountBeforeCompId=animatorRoot.children.length;
+const activeCountBeforeCompId=otherAnimatorRoot.children.length;
+const byId=call({compId:comp.id,action:"animator",animatorAction:"add",animatorName:"Selected By ID",properties:[{property:"position"}],selectors:[]});
+assert.equal(byId.status,"success",byId.message);
+assert.equal(animatorRoot.children.length,rootCountBeforeCompId+1,"explicit compId must target its composition, not activeItem");
+assert.equal(otherAnimatorRoot.children.length,activeCountBeforeCompId,"valid compId must not mutate the active but differently identified composition");
+const invalidCompId=call({compId:999999,action:"animator",animatorAction:"add",animatorName:"Invalid ID",properties:[{property:"position"}],selectors:[]});
+assert.equal(invalidCompId.status,"error","unknown explicit compId must fail rather than fall through to activeItem");
+assert.equal(animatorRoot.children.length,rootCountBeforeCompId+1);
+assert.equal(otherAnimatorRoot.children.length,activeCountBeforeCompId,"invalid compId must not mutate the active composition");
+ok({compId:comp.id,action:"animator",animatorAction:"remove",animatorIndex:3});
 const caps=JSON.parse(sandbox.aeCommand({operation:"inspect",action:"get",scope:"capabilities"}));
 assert(caps.data.operations.text.includes("animator") && caps.data.operations.text.includes("selector"));
 assert.deepEqual(caps.data.textAnimators.selectorTypes,["range","wiggly","expression"]);

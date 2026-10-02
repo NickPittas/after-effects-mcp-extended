@@ -1789,7 +1789,7 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.10.11",
+            version: "1.10.12",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             instanceId: bridgeInstanceId,
@@ -2061,9 +2061,26 @@ function createTextAnimator(args) {
 // --- General After Effects command surface ---
 function aeGetComposition(args) {
     var comp = null;
-    if (args.compIndex !== undefined && args.compIndex !== null) {
+    var hasCompId = args.compId !== undefined && args.compId !== null;
+    var hasCompIndex = args.compIndex !== undefined && args.compIndex !== null;
+    var hasCompName = args.compName !== undefined && args.compName !== null && args.compName !== "";
+    if (hasCompId) {
+        for (var idIndex = 1; idIndex <= app.project.numItems; idIndex++) {
+            var idItem = app.project.item(idIndex);
+            if (idItem instanceof CompItem && idItem.id === args.compId) {
+                comp = idItem;
+                break;
+            }
+        }
+        if (!comp) throw new Error("Composition not found for compId " + args.compId + ".");
+        if (hasCompIndex) {
+            var indexedItem = app.project.item(args.compIndex);
+            if (!(indexedItem instanceof CompItem) || indexedItem.id !== comp.id) throw new Error("compId and compIndex select different compositions.");
+        }
+        if (hasCompName && comp.name !== args.compName) throw new Error("compId and compName select different compositions.");
+    } else if (hasCompIndex) {
         comp = app.project.item(args.compIndex);
-    } else if (args.compName) {
+    } else if (hasCompName) {
         for (var i = 1; i <= app.project.numItems; i++) {
             var item = app.project.item(i);
             if (item instanceof CompItem && item.name === args.compName) {
@@ -2071,7 +2088,7 @@ function aeGetComposition(args) {
                 break;
             }
         }
-    } else if (app.project.activeItem instanceof CompItem) {
+    } else if (!hasCompId && !hasCompIndex && !hasCompName && app.project.activeItem instanceof CompItem) {
         comp = app.project.activeItem;
     }
     if (!comp || !(comp instanceof CompItem)) throw new Error("Composition not found.");
@@ -2493,7 +2510,7 @@ function aeInspect(args) {
     var scope = args.scope || "composition";
     if (scope === "capabilities") {
         return {
-            bridgeVersion: "1.10.11",
+            bridgeVersion: "1.10.12",
             command: "aeCommand",
             operations: {
                 inspect: ["get"],
@@ -3200,10 +3217,41 @@ function aeTextSelectorAt(layer, animatorIndex, selectorIndex) {
 function aeTextPropertyReport(property, path) {
     var report = aeSerializeProperty(property, 0, 0, true);
     report.propertyPath = path;
-    if (property.propertyType === PropertyType.PROPERTY) report.keyframes = aeSerializeKeyframes(property);
+    if (property.propertyType === PropertyType.PROPERTY) {
+        report.keyframes = aeSerializeKeyframes(property);
+        try { report.canSetExpression = property.canSetExpression; } catch (_canSetExpressionReportError) { report.canSetExpression = null; }
+        try { report.canVaryOverTime = property.canVaryOverTime; } catch (_canVaryOverTimeReportError) { report.canVaryOverTime = null; }
+        try { report.isModified = property.isModified; } catch (_isModifiedReportError) { report.isModified = null; }
+    }
     if (property.numProperties) {
         report.properties = [];
-        for (var i = 1; i <= property.numProperties; i++) report.properties.push(aeTextPropertyReport(property.property(i), path.concat([i])));
+        if (property.matchName === "ADBE Text Animator Properties") {
+            var writableCandidates = [];
+            var addableMatches = [];
+            report.propertyCatalog = {
+                rawChildCount: property.numProperties,
+                entriesMayBeDormant: true,
+                activationState: "unknown",
+                note: "This named group can enumerate dormant animator-property options. Child presence/count alone does not prove timeline activation or writability."
+            };
+            for (var animatorPropertyIndex = 1; animatorPropertyIndex <= property.numProperties; animatorPropertyIndex++) {
+                var animatorProperty = property.property(animatorPropertyIndex);
+                var animatorPropertyReport = aeTextPropertyReport(animatorProperty, path.concat([animatorPropertyIndex]));
+                try {
+                    animatorPropertyReport.parentCanAddProperty = property.canAddProperty(animatorProperty.matchName);
+                    if (animatorPropertyReport.parentCanAddProperty) addableMatches.push(animatorProperty.matchName);
+                } catch (_canAddAnimatorPropertyReportError) { animatorPropertyReport.parentCanAddProperty = null; }
+                if (animatorPropertyReport.canSetExpression === true || animatorPropertyReport.canVaryOverTime === true) {
+                    writableCandidates.push(animatorProperty.matchName);
+                }
+                report.properties.push(animatorPropertyReport);
+            }
+            report.propertyCatalog.writableCapabilityCandidates = writableCandidates;
+            report.propertyCatalog.parentCanAddPropertyMatches = addableMatches;
+            report.propertyCatalog.writableCapabilitiesAreNotVisibilityProof = true;
+        } else {
+            for (var i = 1; i <= property.numProperties; i++) report.properties.push(aeTextPropertyReport(property.property(i), path.concat([i])));
+        }
     }
     return report;
 }
@@ -3252,30 +3300,85 @@ function aeTextAnimatorPropertyMatch(spec) {
     return matchName;
 }
 
-function aeTextEditAnimatorProperties(layer, animatorIndex, specs) {
+function aeTextAnimatorPropertyCapabilities(property) {
+    var result = { canSetExpression: null, canVaryOverTime: null, isModified: null, numKeys: null, expression: null };
+    try { result.canSetExpression = property.canSetExpression; } catch (_canSetExpressionError) {}
+    try { result.canVaryOverTime = property.canVaryOverTime; } catch (_canVaryOverTimeError) {}
+    try { result.isModified = property.isModified; } catch (_isModifiedError) {}
+    try { result.numKeys = property.numKeys; } catch (_numKeysError) {}
+    try { if (property.canSetExpression) result.expression = property.expression; } catch (_expressionError) {}
+    return result;
+}
+
+function aeTextFindAnimatorProperty(group, matchName) {
+    var fallback = null;
+    for (var i = 1; i <= group.numProperties; i++) {
+        var candidate = group.property(i);
+        if (candidate.matchName !== matchName) continue;
+        var capabilities = aeTextAnimatorPropertyCapabilities(candidate);
+        if (capabilities.canSetExpression === true || capabilities.canVaryOverTime === true) {
+            return { property: candidate, capabilities: capabilities, writableCandidate: true };
+        }
+        if (!fallback) fallback = { property: candidate, capabilities: capabilities, writableCandidate: false };
+    }
+    return fallback;
+}
+
+function aeTextEditAnimatorProperties(layer, animatorIndex, specs, activateExistingCatalogEntries) {
     if (Object.prototype.toString.call(specs) !== "[object Array]") throw new Error("Animator properties must be an array.");
     for (var v = 0; v < specs.length; v++) {
         aeTextAnimatorPropertyMatch(specs[v]);
         aeTextValidateValueSpec(specs[v]);
     }
+    var editReport = { addedByCommand: [], writesApplied: [], reusedWritableProperties: [], activationPendingProbe: [] };
     for (var i = 0; i < specs.length; i++) {
         var spec = specs[i];
         var matchName = aeTextAnimatorPropertyMatch(spec);
         var group = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Animator Properties");
-        var property = group.property(matchName);
+        var found = aeTextFindAnimatorProperty(group, matchName);
+        var property = found ? found.property : null;
+        var propertyIndex = property ? property.propertyIndex : null;
         if (spec.remove === true) {
             if (!property) throw new Error("Animator property not found: " + matchName);
+            if (!found.writableCandidate) throw new Error("Refusing to remove dormant or non-writable animator catalog entry " + matchName + "; no active writable instance was identified.");
             property.remove();
             continue;
         }
-        if (!property) {
-            if (!group.canAddProperty(matchName)) throw new Error("AE cannot add animator property " + matchName + " on this layer (check native 3D/renderer requirements).");
-            var propertyIndex = group.addProperty(matchName).propertyIndex;
+        var mustActivate = activateExistingCatalogEntries === true || !property;
+        if (!property && activateExistingCatalogEntries !== true && !group.canAddProperty(matchName)) {
+            throw new Error("AE cannot add animator property " + matchName + " on this layer (check native 3D/renderer requirements).");
+        }
+        if (property && !found.writableCandidate && activateExistingCatalogEntries !== true) {
+            var caps = found.capabilities;
+            var hasPreservationRisk = caps.isModified === true || caps.numKeys > 0 || (caps.expression && caps.expression !== "");
+            if (hasPreservationRisk) {
+                throw new Error("Animator property " + matchName + " is not reported writable but has modified state; refusing to replace it.");
+            }
+            if (caps.canSetExpression !== false || caps.canVaryOverTime !== false) {
+                throw new Error("Animator property " + matchName + " has unknown write capabilities; refusing an unverified update.");
+            }
+            mustActivate = true;
+        }
+        if (mustActivate) {
+            if (activateExistingCatalogEntries !== true && property && !group.canAddProperty(matchName)) {
+                throw new Error("Animator property " + matchName + " is present in the catalog but not writable or addable; it was not changed.");
+            }
+            var addedProperty = group.addProperty(matchName);
+            propertyIndex = addedProperty.propertyIndex;
             group = aeTextAnimatorAt(layer, animatorIndex).property("ADBE Text Animator Properties");
             property = group.property(propertyIndex);
+            if (!property || property.matchName !== matchName) throw new Error("After Effects did not expose the activated animator property " + matchName + " at its returned index.");
+            editReport.addedByCommand.push(matchName);
+            if (activateExistingCatalogEntries !== true && found) editReport.activationPendingProbe.push(matchName);
+        } else {
+            editReport.reusedWritableProperties.push(matchName);
         }
         aeTextApplyValueSpec(property, spec);
+        if (spec.value !== undefined || spec.keyframes !== undefined || spec.expression !== undefined || spec.time !== undefined || spec.clearKeys === true) {
+            editReport.writesApplied.push(matchName);
+        }
     }
+    return editReport;
 }
 
 function aeTextSelectorMatch(spec) {
@@ -3349,13 +3452,20 @@ function aeTextAnimatorCommand(layer, args) {
     var verb = args.animatorAction || "get";
     if (verb === "get" && args.animatorIndex === undefined && args.animatorName === undefined) return aeTextPropertyReport(group, ["ADBE Text Properties", "ADBE Text Animators"]);
     var animatorIndex;
+    var propertyEditReport = {
+        addedByCommand: [],
+        writesApplied: [],
+        reusedWritableProperties: [],
+        activationPendingProbe: [],
+        note: "No animator property specs were activated in this command; the named-group catalog is not proof of active properties."
+    };
     if (verb === "add") {
         if (args.properties !== undefined && Object.prototype.toString.call(args.properties) !== "[object Array]") throw new Error("properties must be an array.");
         if (args.selectors !== undefined && Object.prototype.toString.call(args.selectors) !== "[object Array]") throw new Error("selectors must be an array.");
         animatorIndex = group.addProperty("ADBE Text Animator").propertyIndex;
         try {
             if (args.animatorName || args.name) aeTextAnimatorAt(layer, animatorIndex).name = args.animatorName || args.name;
-            if (args.properties) aeTextEditAnimatorProperties(layer, animatorIndex, args.properties);
+            if (args.properties) propertyEditReport = aeTextEditAnimatorProperties(layer, animatorIndex, args.properties, true);
             var selectors = args.selectors === undefined ? [{type:"range"}] : args.selectors;
             // Some AE versions add a range selector automatically. Replace only
             // the selectors on this newly-created animator, not existing ones.
@@ -3376,10 +3486,12 @@ function aeTextAnimatorCommand(layer, args) {
         if (verb === "update") {
             if (args.newName !== undefined) animator.name = args.newName;
             if (args.enabled !== undefined) animator.enabled = args.enabled;
-            if (args.properties) aeTextEditAnimatorProperties(layer, animatorIndex, args.properties);
+            if (args.properties) propertyEditReport = aeTextEditAnimatorProperties(layer, animatorIndex, args.properties, false);
         } else if (verb !== "get") throw new Error("animatorAction must be get, add, update, or remove.");
     }
-    return aeTextPropertyReport(aeTextAnimatorAt(layer, animatorIndex), ["ADBE Text Properties", "ADBE Text Animators", animatorIndex]);
+    var animatorReport = aeTextPropertyReport(aeTextAnimatorAt(layer, animatorIndex), ["ADBE Text Properties", "ADBE Text Animators", animatorIndex]);
+    animatorReport.animatorPropertyEdit = propertyEditReport;
+    return animatorReport;
 }
 
 function aeTextSelectorCommand(layer, args) {

@@ -11,7 +11,7 @@ import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE, AE_TEXT_ANIMATO
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.10.11"
+  version: "1.10.12"
 }, {
   instructions: AE_HARNESS_SYSTEM_PROMPT
 });
