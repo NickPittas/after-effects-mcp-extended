@@ -10,6 +10,8 @@
   var state = null;
   var lastUpdatedAt = "";
   var followLatest = true;
+  var conversationRenderKey = null;
+  var renderingConversation = false;
   var toolsVisible = localStorage.getItem("aeMcpToolsVisible") === "true";
   var toastTimer = null;
   var lastCompanionLaunch = 0;
@@ -678,6 +680,12 @@
     if (!state) return;
     var transcript = state.transcript || [];
     var events = state.activityLog || [];
+    elements.toolsCount.textContent = String(events.length);
+    var renderKey = JSON.stringify([state.providerName, transcript, toolsVisible, toolsVisible ? events : [],
+      Boolean(state.busy && state.activity && state.activity.kind === "responding")]);
+    // Status/heartbeat polls must not replace DOM the user is reading or selecting.
+    if (renderKey === conversationRenderKey) return;
+    conversationRenderKey = renderKey;
     var items = transcript.map(function (entry, index) {
       return { type: "message", time: entry.time, value: entry, index: index, fallbackOrder: index * 2 };
     });
@@ -685,7 +693,20 @@
       items = items.concat(events.map(function (event, index) { return { type: "tool", time: event.time, value: event, fallbackOrder: index * 2 + 1 }; }));
     }
     items.sort(compareTimelineItems);
-    var previousBottomDistance = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight;
+    var previousTop = elements.conversation.scrollTop;
+    var shouldFollow = followLatest;
+    var anchor = null;
+    var viewport = elements.conversation.getBoundingClientRect ? elements.conversation.getBoundingClientRect() : null;
+    var children = elements.conversation.children || [];
+    if (!shouldFollow && viewport) {
+      for (var childIndex = 0; childIndex < children.length; childIndex++) {
+        var bounds = children[childIndex].getBoundingClientRect();
+        if (bounds.bottom > viewport.top) {
+          anchor = {key: children[childIndex].dataset.timelineKey, offset: bounds.top - viewport.top};
+          break;
+        }
+      }
+    }
     var fragment = document.createDocumentFragment();
     for (var itemIndex = 0; itemIndex < items.length; itemIndex++) {
       var item = items[itemIndex];
@@ -696,16 +717,32 @@
           itemIndex++;
         }
         itemIndex--;
-        fragment.appendChild(createToolGroup(toolEvents));
+        var toolGroup = createToolGroup(toolEvents);
+        toolGroup.dataset.timelineKey = "tool:" + (toolEvents[0].id || toolEvents[0].sequence || toolEvents[0].time);
+        fragment.appendChild(toolGroup);
       } else {
         var streaming = state.busy && state.activity && state.activity.kind === "responding" && item.value.role === "assistant" && item.index === transcript.length - 1;
-        fragment.appendChild(createMessage(item.value, streaming));
+        var message = createMessage(item.value, streaming);
+        message.dataset.timelineKey = "message:" + (item.value.id || item.value.sequence || item.value.time + ":" + item.index);
+        fragment.appendChild(message);
       }
     }
-    elements.conversation.replaceChildren(fragment);
-    elements.emptyState.hidden = items.length > 0;
-    elements.toolsCount.textContent = String(events.length);
-    if (followLatest || previousBottomDistance < 48) jumpToLatest(false);
+    renderingConversation = true;
+    try {
+      elements.conversation.replaceChildren(fragment);
+      elements.emptyState.hidden = items.length > 0;
+      if (shouldFollow) jumpToLatest(false);
+      else {
+        elements.conversation.scrollTop = previousTop;
+        children = elements.conversation.children || [];
+        if (anchor) for (var anchorIndex = 0; anchorIndex < children.length; anchorIndex++) {
+          if (children[anchorIndex].dataset.timelineKey === anchor.key) {
+            elements.conversation.scrollTop += children[anchorIndex].getBoundingClientRect().top - viewport.top - anchor.offset;
+            break;
+          }
+        }
+      }
+    } finally { renderingConversation = false; }
     updateJumpButton();
   }
 
@@ -854,9 +891,9 @@
   }
 
   function updateJumpButton() {
+    if (renderingConversation) return;
     var distance = elements.conversation.scrollHeight - elements.conversation.scrollTop - elements.conversation.clientHeight;
-    if (distance > 70) followLatest = false;
-    else if (distance < 24) followLatest = true;
+    followLatest = distance <= 8;
     elements.jumpLatest.hidden = followLatest;
   }
 

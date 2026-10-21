@@ -125,6 +125,8 @@ opens that provider's official installation instructions. Sign-in is launched
 only when the user presses **Sign in**. Each provider keeps its own conversation
 session.
 
+Chat follows new messages while you are at the bottom. Scrolling up pauses following, including during streamed replies. Status-only updates preserve the conversation DOM; content updates retain the visible message and its position. Scroll back to the bottom or press **Jump to latest** to resume following.
+
 **Stop** cancels request preparation and the active harness turn. On Windows, generic harnesses are stopped by terminating the launcher and its complete child-process tree before reporting Stopped. Codex uses its native turn interrupt, with process-tree termination if interruption is not confirmed. Buffered output from cancelled runs is ignored. Pending AE bridge requests owned by this chat are cancelled; unrelated MCP clients are not affected. An AE script already executing cannot be forcibly interrupted safely, and completed edits are not undone.
 
 **Clear** stops the active harness, clears visible messages/tool history, and resets saved harness session IDs (including the Codex thread). The next message starts a fresh conversation without resume/continue flags. Model choices and sign-in credentials are preserved, and historical CLI session files are not deleted.
