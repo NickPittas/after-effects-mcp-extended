@@ -128,7 +128,7 @@ export const PROVIDERS: Record<CliProviderId, ProviderDefinition> = {
     label: "Pi",
     shortLabel: "Pi",
     executableNames: ["pi.exe", "pi.cmd", "pi"],
-    knownPaths: [path.join(appData, "npm", "pi.cmd"), path.join(home, ".local", "bin", "pi.exe")],
+    knownPaths: [path.join(home, ".pi", "agent", "bin", "pi.cmd"), path.join(home, ".pi", "agent", "bin", "pi.exe"), path.join(appData, "npm", "pi.cmd"), path.join(home, ".local", "bin", "pi.exe")],
     versionArgs: ["--version"],
     docsUrl: "https://pi.dev/docs/latest/windows",
     installKind: "npm",

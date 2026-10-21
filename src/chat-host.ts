@@ -99,7 +99,7 @@ type ChatRequest = {
   modelChoice?: ModelChoice;
 };
 
-const VERSION = "1.10.14";
+const VERSION = "1.10.15";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");

@@ -31,6 +31,16 @@ const base = {
 };
 
 assert.deepEqual(PROVIDER_ORDER, ["codex", "claude", "agy", "kimi", "pi", "opencode"]);
+// AE can remain open across a Pi installation and retain an obsolete PATH.
+const standalonePi = path.join(process.env.USERPROFILE || '', '.pi', 'agent', 'bin', 'pi.cmd');
+if (process.platform === 'win32' && fs.existsSync(standalonePi)) {
+  const savedPath = process.env.PATH;
+  try {
+    const piBin = path.dirname(standalonePi).toLowerCase();
+    process.env.PATH = (savedPath || '').split(';').filter(entry => entry.replace(/^"|"$/g, '').toLowerCase() !== piBin).join(';');
+    assert.equal(findProviderExecutable('pi')?.toLowerCase(), standalonePi.toLowerCase(), 'Standalone Pi must be found without its directory on PATH');
+  } finally { process.env.PATH = savedPath; }
+}
 assert(compareCliVersions("codex-cli 0.159.0-alpha.12.1", "codex-cli 0.146.0") > 0);
 assert(compareCliVersions("codex-cli 0.159.0", "codex-cli 0.159.0-alpha.12.1") > 0);
 assert(compareCliVersions("codex-cli 0.159.0-alpha.12.1", "codex-cli 0.159.0-alpha.9") > 0);

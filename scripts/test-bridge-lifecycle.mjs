@@ -65,6 +65,7 @@ const sandbox = {
 vm.createContext(sandbox);
 const source = fs.readFileSync("src/scripts/mcp-bridge-auto.jsx", "utf8").replace(/^#target.*$/gm, "");
 vm.runInContext(source, sandbox, { filename: "mcp-bridge-auto.jsx" });
+assert.equal(typeof sandbox.aeCapturePreview, "function", "Preview capture must load in headless CEP mode, outside legacy UI blocks");
 
 // Load the actual 5k-line core inside a caller scope, as evalFile can do. Its
 // declarations deliberately do not exist globally after initialization.

@@ -20,6 +20,8 @@ Extended capabilities include:
 - Project import, organization, saving, render-queue operations, and PNG frame capture
 
 Composition Viewer attachments use AE's 8-bit PNG output module, avoiding the dark-image bug in `saveFrameToPng()` for 16/32-bit projects. Compositing remains at the project's original precision. Capture temporarily isolates a preview render job, restores existing queue selections, and removes its temporary job/files even on failure. It exports composition output; viewer-only exposure, channel, zoom, and monitor/proofing controls are not baked into the image.
+
+Version 1.10.15 makes that capture helper available to the combined CEP bridge (correcting the 1.10.14 loading error). It also detects Pi in `%USERPROFILE%\.pi\agent\bin` and refreshes the companion's child-process PATH from the current user/system environment, so restarting AE does not lose Pi/Node installed after AE was launched. It does not modify the saved Windows PATH.
 - Native text animator/selector lifecycle with character, word, and line ranges, wiggly and expression selectors, animated values, expressions, and native match-name access
 - Improved bridge response tracking and direct rendered-frame image returns
 - Dockable, resizable ScriptUI bridge panel
@@ -103,7 +105,7 @@ Node.js and npm are only required for developing or rebuilding the project.
 ### 📥 Installation
 
 Release users close After Effects, then [download the latest Windows installer](https://github.com/NickPittas/after-effects-mcp-extended/releases/latest) and double-click
-`AfterEffectsMCP-Extended-Setup-1.10.14.exe`. The one-file Windows setup asks
+`AfterEffectsMCP-Extended-Setup-1.10.15.exe`. The one-file Windows setup asks
 for administrator permission once, detects installed After Effects versions,
 and installs all three components:
 
@@ -167,7 +169,7 @@ npm run build:installer
 
 The installer and its SHA-256 checksum are written to `release/`. The build signs and verifies the complete staged CEP panel with Adobe's ZXPSignCmd after adding both executables and the bridge core. Its locally generated signing certificate/password stay under `%LOCALAPPDATA%\AfterEffectsMCP\signing`, outside the repository. The build script also accepts `-SigningToolPath`, `-CertificatePath`, and `-PasswordFile` for an existing signing identity. Never publish private signing files.
 
-Version 1.10.14 includes the chat scroll fix and a signed CEP panel for installations that reject unsigned panels despite PlayerDebugMode. Setup preserves the signed panel bytes, keeps a backup of the previous app/panel, refuses to update while AE is running, and does not modify CEP debug-mode settings. CEP signing is separate from Windows Authenticode signing of the setup executable. The source-only development install scripts still install unsigned development panels; use the built setup for signed release installations.
+Version 1.10.15 includes the chat scroll fix and a signed CEP panel for installations that reject unsigned panels despite PlayerDebugMode. Setup preserves the signed panel bytes, keeps a backup of the previous app/panel, refuses to update while AE is running, and does not modify CEP debug-mode settings. CEP signing is separate from Windows Authenticode signing of the setup executable. The source-only development install scripts still install unsigned development panels; use the built setup for signed release installations.
 
 `npm run build:standalone` creates:
 
@@ -278,7 +280,7 @@ must activate requested properties with native `addProperty()` before writing.
 Do not enable layer 3D or replace the text layer as a workaround for a failure.
 
 The opt-in native check is `node scripts/test-live-text-animators.mjs --live`.
-Run it after building, with bridge 1.10.14 loaded and the chat idle. It creates
+Run it after building, with bridge 1.10.15 loaded and the chat idle. It creates
 and removes only a uniquely identified temporary composition, checks Position
 keyframes/expressions and default-valued activation, and compares rendered
 frames. It never saves or edits existing compositions; project undo history

@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const source = fs.readFileSync('src/scripts/mcp-bridge-auto.jsx', 'utf8');
-const helper = source.slice(source.indexOf('function aeCapturePreview('), source.indexOf('function captureViewerForChat('));
+const helper = source.slice(source.indexOf('function aeCapturePreview('), source.indexOf('function aeFrameCommand('));
 for (const failure of [null, 'template', 'render', 'copy']) {
   const jobs = [{ render: true }, { render: false }];
   const files = [];
