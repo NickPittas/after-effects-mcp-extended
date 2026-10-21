@@ -1789,7 +1789,7 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.10.12",
+            version: "1.10.13",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             instanceId: bridgeInstanceId,
@@ -2510,7 +2510,7 @@ function aeInspect(args) {
     var scope = args.scope || "composition";
     if (scope === "capabilities") {
         return {
-            bridgeVersion: "1.10.12",
+            bridgeVersion: "1.10.13",
             command: "aeCommand",
             operations: {
                 inspect: ["get"],

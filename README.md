@@ -100,8 +100,8 @@ Node.js and npm are only required for developing or rebuilding the project.
 
 ### 📥 Installation
 
-Release users download and double-click
-`AfterEffectsMCP-Extended-Setup-<version>.exe`. The one-file Windows setup asks
+Release users close After Effects, then [download the latest Windows installer](https://github.com/NickPittas/after-effects-mcp-extended/releases/latest) and double-click
+`AfterEffectsMCP-Extended-Setup-1.10.13.exe`. The one-file Windows setup asks
 for administrator permission once, detects installed After Effects versions,
 and installs all three components:
 
@@ -163,7 +163,9 @@ To build the single-file Windows setup from source, run:
 npm run build:installer
 ```
 
-The installer and its SHA-256 checksum are written to `release/`.
+The installer and its SHA-256 checksum are written to `release/`. The build signs and verifies the complete staged CEP panel with Adobe's ZXPSignCmd after adding both executables and the bridge core. Its locally generated signing certificate/password stay under `%LOCALAPPDATA%\AfterEffectsMCP\signing`, outside the repository. The build script also accepts `-SigningToolPath`, `-CertificatePath`, and `-PasswordFile` for an existing signing identity. Never publish private signing files.
+
+Version 1.10.13 includes the chat scroll fix and a signed CEP panel for installations that reject unsigned panels despite PlayerDebugMode. Setup preserves the signed panel bytes, keeps a backup of the previous app/panel, refuses to update while AE is running, and does not modify CEP debug-mode settings. CEP signing is separate from Windows Authenticode signing of the setup executable. The source-only development install scripts still install unsigned development panels; use the built setup for signed release installations.
 
 `npm run build:standalone` creates:
 
@@ -274,7 +276,7 @@ must activate requested properties with native `addProperty()` before writing.
 Do not enable layer 3D or replace the text layer as a workaround for a failure.
 
 The opt-in native check is `node scripts/test-live-text-animators.mjs --live`.
-Run it after building, with bridge 1.10.12 loaded and the chat idle. It creates
+Run it after building, with bridge 1.10.13 loaded and the chat idle. It creates
 and removes only a uniquely identified temporary composition, checks Position
 keyframes/expressions and default-valued activation, and compares rendered
 frames. It never saves or edits existing compositions; project undo history
@@ -292,9 +294,9 @@ You can create new compositions with custom settings:
 Example MCP tool usage (for developers):
 ```javascript
 mcp_aftereffects_create_composition({
-  name: "My Composition", 
-  width: 1920, 
-  height: 1080, 
+  name: "My Composition",
+  width: 1920,
+  height: 1080,
   frameRate: 30,
   duration: 10
 });

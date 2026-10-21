@@ -1,5 +1,8 @@
 # Node.js
 node_modules/
+.rnd
+*.p12
+*.password
 npm-debug.log
 yarn-error.log
 yarn-debug.log

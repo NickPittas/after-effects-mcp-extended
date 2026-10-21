@@ -113,14 +113,22 @@ function Find-CodexExecutable {
 }
 
 function Stop-ChatCompanion {
+    $allowedRoots = @((Join-Path $env:APPDATA 'AfterEffectsMCP'), (Join-Path $env:APPDATA "Adobe\CEP\extensions\$extensionId"))
     Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.ExecutablePath -and $_.ExecutablePath.EndsWith("after-effects-codex-chat.exe", [StringComparison]::OrdinalIgnoreCase)
+        $candidate = $_.ExecutablePath
+        if (-not $candidate -or [IO.Path]::GetFileName($candidate) -notin @('after-effects-codex-chat.exe','after-effects-mcp-extended.exe')) { return $false }
+        foreach ($root in $allowedRoots) { if ($candidate.StartsWith($root + '\', [StringComparison]::OrdinalIgnoreCase)) { return $true } }
+        return $false
     } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
 if (-not (Test-Path -LiteralPath $PayloadPath)) {
     Show-SetupMessage "The installer payload is missing. Download the setup file again." $productName ([System.Windows.Forms.MessageBoxIcon]::Error)
     exit 2
+}
+if (-not $DryRun -and (Get-Process AfterFX -ErrorAction SilentlyContinue)) {
+    Show-SetupMessage 'Save your project and close After Effects before updating. No installed files have been changed.' $productName ([System.Windows.Forms.MessageBoxIcon]::Warning)
+    exit 4
 }
 if (-not $DryRun -and -not (Test-Administrator)) { Start-ElevatedInstaller }
 
@@ -129,7 +137,6 @@ if (-not $DryRun -and -not (Test-Administrator)) { Start-ElevatedInstaller }
 # launched setup, while using elevation only for AE's Program Files folders.
 if ($Elevated -and $TargetUserProfile -and $TargetAppData -and $TargetLocalAppData) {
     $env:USERPROFILE = $TargetUserProfile
-    $env:HOME = $TargetUserProfile
     $env:APPDATA = $TargetAppData
     $env:LOCALAPPDATA = $TargetLocalAppData
 }
@@ -158,6 +165,10 @@ try {
         (Join-Path $payloadApp "pi-after-effects-extension.ts"),
         (Join-Path $payloadApp "launch-chat.vbs"),
         (Join-Path $payloadCep "CSXS\manifest.xml"),
+        (Join-Path $payloadCep "META-INF\signatures.xml"),
+        (Join-Path $payloadCep "mimetype"),
+        (Join-Path $payloadCep "bin\after-effects-codex-chat.exe"),
+        (Join-Path $payloadCep "bin\after-effects-mcp-extended.exe"),
         $payloadBridge,
         (Join-Path $payloadSupport "uninstall.ps1"),
         (Join-Path $payloadSupport "uninstall.vbs"),
@@ -188,9 +199,12 @@ try {
     Stop-ChatCompanion
     Start-Sleep -Milliseconds 300
 
-    $appData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+    $appData = $env:APPDATA
     $appFolder = Join-Path $appData "AfterEffectsMCP"
     $cepFolder = Join-Path $appData "Adobe\CEP\extensions\$extensionId"
+    $backupRoot = Join-Path $env:LOCALAPPDATA ('AfterEffectsMCP\install-backups\' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $backupRoot -Force | Out-Null
+    $installationBackups = @()
     foreach ($target in @($appFolder, $cepFolder)) {
         if (-not (Test-Path -LiteralPath $target)) { continue }
         $resolvedTarget = [IO.Path]::GetFullPath($target)
@@ -198,7 +212,10 @@ try {
         if (-not $resolvedTarget.StartsWith($resolvedAppData, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Refusing to replace an unexpected installation directory: $resolvedTarget"
         }
-        Remove-Item -LiteralPath $resolvedTarget -Recurse -Force
+        $backup = Join-Path $backupRoot ([IO.Path]::GetFileName($resolvedTarget))
+        if (-not ([IO.Path]::GetFullPath($backup)).StartsWith([IO.Path]::GetFullPath($backupRoot) + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid backup path.' }
+        Move-Item -LiteralPath $resolvedTarget -Destination $backup
+        $installationBackups += @{ target=$resolvedTarget; backup=$backup }
     }
     New-Item -ItemType Directory -Path $appFolder -Force | Out-Null
     New-Item -ItemType Directory -Path $cepFolder -Force | Out-Null
@@ -207,7 +224,7 @@ try {
     Copy-Item -Path (Join-Path $payloadCep "*") -Destination $cepFolder -Recurse -Force
     $cepBin = Join-Path $cepFolder "bin"
     New-Item -ItemType Directory -Path $cepBin -Force | Out-Null
-    Copy-Item -LiteralPath (Join-Path $payloadApp "after-effects-codex-chat.exe") -Destination (Join-Path $cepBin "after-effects-codex-chat.exe") -Force
+    # The complete signed panel is copied unchanged; no post-signing file writes.
     Copy-Item -LiteralPath (Join-Path $payloadSupport "uninstall.ps1") -Destination (Join-Path $appFolder "uninstall.ps1") -Force
     Copy-Item -LiteralPath (Join-Path $payloadSupport "uninstall.vbs") -Destination (Join-Path $appFolder "uninstall.vbs") -Force
 
@@ -220,11 +237,7 @@ try {
         $bridgePaths.Add($panelTarget)
     }
 
-    foreach ($csxsVersion in 9..12) {
-        $key = "$userRegistryRoot\Software\Adobe\CSXS.$csxsVersion"
-        New-Item -Path $key -Force | Out-Null
-        New-ItemProperty -Path $key -Name "PlayerDebugMode" -Value "1" -PropertyType String -Force | Out-Null
-    }
+    # Signed releases do not rely on, or change, CEP PlayerDebugMode.
 
     $mcpTarget = Join-Path $appFolder "after-effects-mcp-extended.exe"
     $codex = Find-CodexExecutable
@@ -267,6 +280,17 @@ try {
     exit 0
 } catch {
     $message = $_.Exception.Message
+    foreach ($saved in @($installationBackups)) {
+        if (-not $saved -or -not (Test-Path -LiteralPath $saved.backup)) { continue }
+        try {
+            if (Test-Path -LiteralPath $saved.target) {
+                $resolvedTarget = [IO.Path]::GetFullPath($saved.target)
+                if (-not $resolvedTarget.StartsWith([IO.Path]::GetFullPath($env:APPDATA).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Invalid rollback path.' }
+                Move-Item -LiteralPath $resolvedTarget -Destination ($saved.backup + '-failed')
+            }
+            Move-Item -LiteralPath $saved.backup -Destination $saved.target
+        } catch { "Rollback error: $_" | Add-Content -LiteralPath $logPath -Encoding UTF8 }
+    }
     "[$(Get-Date -Format o)] ERROR: $message`n$($_ | Out-String)" | Add-Content -LiteralPath $logPath -Encoding UTF8
     Show-SetupMessage ("Installation failed:`n`n$message`n`nDetails were saved to:`n$logPath") $productName ([System.Windows.Forms.MessageBoxIcon]::Error)
     exit 3

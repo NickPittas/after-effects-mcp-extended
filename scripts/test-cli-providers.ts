@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import path from "node:path";
 import { normalizeModelChoice, parseModelCatalog, validateModelChoice } from "../src/cli-models.js";
 import {
   PROVIDER_ORDER,
@@ -204,7 +205,8 @@ if (process.platform === "win32") {
   assert(/cmd\.exe$/i.test(invocation.command));
   assert.equal(invocation.args[0], "/d");
   assert.equal(invocation.windowsVerbatimArguments, true);
-  const npmVersion = spawnCliSync(npmPath, ["--version"], { timeout: 15000 });
+  const installedNpmPath = path.join(path.dirname(process.execPath), "npm.cmd");
+  const npmVersion = spawnCliSync(installedNpmPath, ["--version"], { timeout: 15000 });
   assert.equal(npmVersion.status, 0, `npm.cmd execution failed: ${npmVersion.stderr || npmVersion.stdout}`);
   assert.match(String(npmVersion.stdout), /^\d+\.\d+/);
   for (const provider of PROVIDER_ORDER) {

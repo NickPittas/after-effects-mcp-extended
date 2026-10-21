@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$SigningToolPath,
+    [string]$CertificatePath,
+    [string]$PasswordFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -63,6 +66,10 @@ Copy-Item -LiteralPath (Join-Path $repoRoot "cep\bin\launch-chat.vbs") -Destinat
 Copy-Item -LiteralPath (Join-Path $repoRoot "build\scripts\mcp-bridge-auto.jsx") -Destination (Join-Path $payloadRoot "bridge\mcp-bridge-auto.jsx") -Force
 Copy-Item -Path (Join-Path $repoRoot "cep") -Destination $payloadRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "build\scripts\mcp-bridge-auto.jsx") -Destination (Join-Path $payloadRoot "cep\jsx\mcp-bridge-core.jsx") -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "dist\after-effects-codex-chat.exe") -Destination (Join-Path $payloadRoot "cep\bin\after-effects-codex-chat.exe") -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot "dist\after-effects-mcp-extended.exe") -Destination (Join-Path $payloadRoot "cep\bin\after-effects-mcp-extended.exe") -Force
+# Sign only after every panel file is final. Install must copy these bytes unchanged.
+& (Join-Path $installerRoot 'sign-panel.ps1') -PanelPath (Join-Path $payloadRoot 'cep') -SigningToolPath $SigningToolPath -CertificatePath $CertificatePath -PasswordFile $PasswordFile
 Copy-Item -LiteralPath (Join-Path $installerRoot "uninstall.ps1") -Destination (Join-Path $payloadRoot "support\uninstall.ps1") -Force
 Copy-Item -LiteralPath (Join-Path $installerRoot "uninstall.vbs") -Destination (Join-Path $payloadRoot "support\uninstall.vbs") -Force
 Copy-Item -LiteralPath (Join-Path $repoRoot "LICENSE") -Destination (Join-Path $payloadRoot "LICENSE") -Force
