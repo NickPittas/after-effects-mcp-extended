@@ -1558,13 +1558,51 @@ function chatContextSnapshot() {
     return context;
 }
 
+// saveFrameToPng produces dark 16-bit PNGs in high-bit-depth projects. Use
+// AE's 8-bit PNG output module while leaving the composition at its native
+// precision. Never render the user's queued jobs or leave a capture job behind.
+function aeCapturePreview(comp, time, output) {
+    var queue = app.project.renderQueue;
+    if (queue.rendering) throw new Error("Wait for the current render to finish before capturing a preview.");
+    var previous = [];
+    var job = null;
+    var folder = new Folder(output.parent.fsName + "/.ae-mcp-preview-" + (new Date()).getTime() + "-" + Math.floor(Math.random() * 1000000));
+    if (!folder.create()) throw new Error("Cannot create the preview render folder.");
+    try {
+        for (var i = 1; i <= queue.numItems; i++) {
+            var item = queue.item(i);
+            previous.push({ item: item, render: item.render });
+            if (item.render) item.render = false;
+        }
+        job = queue.items.add(comp);
+        job.timeSpanStart = time;
+        job.timeSpanDuration = comp.frameDuration;
+        job.outputModule(1).applyTemplate("_HIDDEN X-Factor 8");
+        // Applying a template invalidates the previous OutputModule reference.
+        job.outputModule(1).file = new File(folder.fsName + "/frame_[#####].png");
+        queue.render();
+        var frames = folder.getFiles("frame_*.png");
+        frames.sort(function (a, b) { return a.name < b.name ? -1 : a.name > b.name ? 1 : 0; });
+        if (!frames.length || !frames[0].copy(output.fsName)) throw new Error("After Effects did not produce the preview PNG.");
+        return output.fsName;
+    } finally {
+        if (job) job.remove();
+        for (var j = 0; j < previous.length; j++) {
+            if (previous[j].item.render !== previous[j].render) previous[j].item.render = previous[j].render;
+        }
+        var temporaryFiles = folder.getFiles();
+        for (var k = 0; k < temporaryFiles.length; k++) if (temporaryFiles[k] instanceof File) temporaryFiles[k].remove();
+        folder.remove();
+    }
+}
+
 function captureViewerForChat() {
     var comp = app.project ? app.project.activeItem : null;
     if (!(comp && comp instanceof CompItem)) return null;
     var folder = getChatAttachmentFolder();
     var safeName = comp.name.replace(/[\\\/:*?"<>|]/g, "_");
     var output = new File(folder.fsName + "/viewer-" + safeName + "-" + String((new Date()).getTime()) + ".png");
-    comp.saveFrameToPng(comp.time, output);
+    aeCapturePreview(comp, comp.time, output);
     return output.fsName;
 }
 
@@ -1789,7 +1827,7 @@ function writeBridgeHeartbeat(stateName) {
         heartbeat.encoding = "UTF-8";
         if (!heartbeat.open("w")) return;
         heartbeat.write(JSON.stringify({
-            version: "1.10.13",
+            version: "1.10.14",
             state: stateName || (isChecking ? "checking" : "ready"),
             autoRun: autoRunCheckbox.value === true,
             instanceId: bridgeInstanceId,
@@ -2510,7 +2548,7 @@ function aeInspect(args) {
     var scope = args.scope || "composition";
     if (scope === "capabilities") {
         return {
-            bridgeVersion: "1.10.13",
+            bridgeVersion: "1.10.14",
             command: "aeCommand",
             operations: {
                 inspect: ["get"],
@@ -4903,8 +4941,8 @@ function aeFrameCommand(args) {
         var time = args.time !== undefined ? args.time : comp.time;
         var safeName = comp.name.replace(/[\\\/:*?"<>|]/g, "_");
         var outputFile = args.outputPath ? new File(args.outputPath) : new File(captureFolder.fsName + "/" + safeName + "_" + Math.round(time * comp.frameRate) + ".png");
-        comp.saveFrameToPng(time, outputFile);
-        return { path: outputFile.fsName, time: time, frame: Math.round(time * comp.frameRate), composition: comp.name };
+        aeCapturePreview(comp, time, outputFile);
+        return { path: outputFile.fsName, time: time, frame: Math.round(time * comp.frameRate), composition: comp.name, captureMethod: "renderQueuePng8", projectBitsPerChannel: app.project.bitsPerChannel };
     }
     throw new Error("Unsupported frame action: " + args.action);
 }

@@ -1,6 +1,6 @@
 {
   "name": "after-effects-mcp-extended",
-  "version": "1.10.13",
+  "version": "1.10.14",
   "description": "Extended MCP server and multi-CLI chat panel for Adobe After Effects",
   "main": "build/index.js",
   "type": "module",
@@ -19,12 +19,13 @@
     "test:layer-replace-source": "node ./scripts/test-layer-replace-source.mjs",
     "test:text-animators": "node ./scripts/test-text-animators.mjs",
     "test:mcp-contract": "node ./scripts/test-mcp-tool-contract.mjs",
-    "test": "npm run build && npm run test:providers && npm run test:layer-replace-source && npm run test:text-animators && npm run test:mcp-contract && npm run test:bridge-lifecycle && npm run test:cep-watchdog && npm run test:model-ui && npm run test:chat-scroll && npm run test:multi-cli-host",
+    "test": "npm run build && npm run test:providers && npm run test:layer-replace-source && npm run test:text-animators && npm run test:mcp-contract && npm run test:bridge-lifecycle && npm run test:cep-watchdog && npm run test:model-ui && npm run test:chat-scroll && npm run test:frame-preview && npm run test:multi-cli-host",
     "install:standalone": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install-standalone.ps1",
     "install:cep": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install-cep.ps1",
     "start": "node build/index.js",
     "install-bridge": "node install-bridge.js",
-    "postinstall": "npm run build"
+    "postinstall": "npm run build",
+    "test:frame-preview": "node ./scripts/test-frame-preview.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",

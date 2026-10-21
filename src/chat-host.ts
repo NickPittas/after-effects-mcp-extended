@@ -99,7 +99,7 @@ type ChatRequest = {
   modelChoice?: ModelChoice;
 };
 
-const VERSION = "1.10.13";
+const VERSION = "1.10.14";
 const CHAT_DIR = path.join(os.homedir(), "Documents", "ae-mcp-bridge", "codex-chat");
 const REQUEST_DIR = path.join(CHAT_DIR, "requests");
 const ATTACHMENT_DIR = path.join(CHAT_DIR, "attachments");
@@ -522,7 +522,7 @@ async function prepareAfterEffectsRequest(request: ChatRequest, generation: numb
   // every chat message while AE was busy or changing projects.
   if (request.viewerRequested) {
     try {
-      const capture = await runAeBridgeCommand("frame", "capture", {}, 20000, generation);
+      const capture = await runAeBridgeCommand("frame", "capture", {}, 120000, generation);
       const viewerPath = capture?.data?.path || capture?.path;
       if (viewerPath) prepared.viewerPath = String(viewerPath);
       else prepared.viewerError = "After Effects completed the viewer capture but did not return an image path.";

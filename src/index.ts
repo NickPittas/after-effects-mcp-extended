@@ -11,7 +11,7 @@ import { AE_HARNESS_SYSTEM_PROMPT, AE_OPERATION_PARAMETER_GUIDE, AE_TEXT_ANIMATO
 // Create an MCP server
 const server = new McpServer({
   name: "AfterEffectsServer",
-  version: "1.10.13"
+  version: "1.10.14"
 }, {
   instructions: AE_HARNESS_SYSTEM_PROMPT
 });
@@ -1135,6 +1135,8 @@ server.tool(
       const requestedTimeout = Number(parameters.timeoutMs);
       const defaultTimeout = operation === "render" && action === "render"
         ? 3600000
+        : operation === "frame" && action === "capture"
+          ? 120000
         : operation === "inspect"
           ? 60000
           : operation === "layer" && action === "replaceSource" && Array.isArray(parameters.replacements)

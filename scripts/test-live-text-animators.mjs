@@ -35,7 +35,7 @@ function find(node, matchName) {
 try {
   await client.connect(transport);
   const capabilities = await call("inspect","get",{scope:"capabilities"});
-  assert.equal(capabilities.bridgeVersion,"1.10.13","Refusing live edits with an old bridge.");
+  assert.equal(capabilities.bridgeVersion,"1.10.14","Refusing live edits with an old bridge.");
   compId = (await call("composition","create",{name:fixtureName,width:640,height:360,frameRate:25,duration:2,pixelAspect:1})).id;
   const target = {layerIndex:1};
   await fixtureCall("text","add",{name:"Fixture Text",text:"Native Position Test",position:[320,180],fontSize:48,fillColor:[1,1,1]});
